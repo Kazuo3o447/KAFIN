@@ -1,0 +1,31 @@
+node_modules
+.next
+out
+build
+dist
+coverage
+
+# Daten lokal halten, NICHT comitten
+data/research.db
+data/research.db-*
+data/reports/
+data/raw/
+data/logs/
+data/cache/
+data/server.*.log
+
+# Env / Secrets
+.env
+.env.*
+!.env.example
+
+# Tooling
+.vscode
+.idea
+.DS_Store
+*.log
+
+# Playwright
+test-results/
+playwright-report/
+.playwright/

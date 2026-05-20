@@ -1,0 +1,60 @@
+{
+  "name": "kafin-research",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "test:e2e:install": "playwright install chromium",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/lib/storage/migrate.ts"
+  },
+  "dependencies": {
+    "@fortawesome/fontawesome-svg-core": "^6.5.2",
+    "@fortawesome/free-solid-svg-icons": "^6.5.2",
+    "@fortawesome/react-fontawesome": "^0.2.2",
+    "better-sqlite3": "^12.2.0",
+    "chart.js": "^4.4.4",
+    "drizzle-orm": "^0.36.0",
+    "exceljs": "^4.4.0",
+    "next": "14.2.35",
+    "ollama": "^0.5.9",
+    "pino": "^9.4.0",
+    "pptxgenjs": "^3.12.0",
+    "puppeteer": "^23.5.0",
+    "react": "18.3.1",
+    "react-chartjs-2": "^5.2.0",
+    "react-dom": "18.3.1",
+    "rss-parser": "^3.13.0",
+    "ulid": "^2.3.0",
+    "yahoo-finance2": "^3.14.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@testing-library/react": "^16.0.1",
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.7.4",
+    "@types/react": "18.3.11",
+    "@types/react-dom": "18.3.0",
+    "autoprefixer": "^10.4.20",
+    "drizzle-kit": "^0.27.0",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "14.2.35",
+    "postcss": "^8.4.47",
+    "prettier": "^3.3.3",
+    "tailwindcss": "^3.4.13",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.2"
+  },
+  "engines": {
+    "node": ">=20.11.0"
+  }
+}
