@@ -14,6 +14,8 @@ import {
   stepAnswerSections,
   stepComputeScoreAndGate,
   stepSummarize,
+  stepRedTeam,
+  stepComputePeerPercentiles,
   stepPersist,
   resolveModels,
   type PipelineState,
@@ -32,7 +34,9 @@ const PRE_STEPS: Array<{ key: string; label: string; pct: number; fn: (s: Pipeli
 // Sequentielle Steps nach dem parallelen LLM-Block
 const POST_STEPS: Array<{ key: string; label: string; pct: number; fn: (s: PipelineState) => Promise<unknown> }> = [
   { key: "score", label: "Scoring & Gate", pct: 80, fn: stepComputeScoreAndGate },
-  { key: "summary", label: "Zusammenfassung (LLM)", pct: 92, fn: stepSummarize },
+  { key: "summary", label: "Zusammenfassung (LLM)", pct: 87, fn: stepSummarize },
+  { key: "redteam", label: "Red-Team-Analyse (LLM, conditional)", pct: 92, fn: stepRedTeam },
+  { key: "peer", label: "Peer-Percentile-Analyse", pct: 95, fn: stepComputePeerPercentiles },
   { key: "persist", label: "Persistieren", pct: 100, fn: stepPersist },
 ];
 

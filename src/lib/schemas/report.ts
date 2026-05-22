@@ -28,6 +28,7 @@ export const MoatRatingSchema = z.enum([
 const numOrNull = z.number().nullable();
 
 export const KeyMetricsSchema = z.object({
+  // Core metrics (original 16)
   revenue_growth_yoy: numOrNull,
   revenue_cagr_3y: numOrNull,
   gross_margin: numOrNull,
@@ -44,6 +45,37 @@ export const KeyMetricsSchema = z.object({
   ev_sales: numOrNull,
   ev_gross_profit: numOrNull,
   peg: numOrNull,
+
+  // Phase A: Forensic scores (research.md §38)
+  piotroski_f: numOrNull,
+  mohanram_g: numOrNull,
+  altman_z: numOrNull,
+  beneish_m: numOrNull,
+
+  // Phase A: Cash runway
+  cash_runway_months: numOrNull,
+
+  // Phase A: WACC / ROIC spread
+  wacc: numOrNull,
+  roic_wacc_spread: numOrNull,
+
+  // Phase A: Margin trends (linear slope per year, as decimal ratio)
+  gross_margin_trend: numOrNull,    // positive = improving
+  operating_margin_trend: numOrNull,
+  fcf_margin_trend: numOrNull,
+
+  // Phase A: Margin stability (stddev over last 3-5 years)
+  gross_margin_stddev: numOrNull,
+  operating_margin_stddev: numOrNull,
+  fcf_margin_stddev: numOrNull,
+
+  // Phase D (pre-allocated): Analyst & insider
+  analyst_upgrades_3m: numOrNull,
+  analyst_downgrades_3m: numOrNull,
+  insider_net_activity_usd: numOrNull,
+  earnings_surprise_pct: numOrNull,
+  net_revenue_retention: numOrNull,  // SaaS NRR
+  arr_growth_yoy: numOrNull,         // SaaS ARR growth
 });
 export type KeyMetrics = z.infer<typeof KeyMetricsSchema>;
 
@@ -123,6 +155,38 @@ export const ReportSchema = z.object({
   falsification_tests: z.array(z.string()).default([]),
   source_list: z.array(SourceSchema).default([]),
   handoff_to_trade_engine: z.boolean().default(false),
+
+  // Phase A: Forensik / Business Model (optional, default null/empty)
+  business_model_type: z.string().default(""),
+  piotroski_components: z.record(z.string(), z.union([z.literal(0), z.literal(1), z.null()])).default({}),
+  mohanram_components: z.record(z.string(), z.union([z.literal(0), z.literal(1), z.null()])).default({}),
+  altman_classification: z.enum(["safe", "grey", "distress"]).nullable().default(null),
+  beneish_manipulation_probability: z.enum(["low", "high"]).nullable().default(null),
+
+  // Phase C: Red-Team
+  red_team: z.object({
+    bear_arguments: z.array(z.object({
+      argument: z.string(),
+      rebuttal_of: z.string(),
+      severity: z.enum(["low", "medium", "high"]),
+      probability: z.number().min(0).max(1),
+      sourceIdx: z.number().int().nullable().default(null),
+    })).default([]),
+    overlooked_risks: z.array(z.string()).default([]),
+    stress_test: z.object({
+      revenue_growth_halved: z.string().default(""),
+      margin_compression_5ppt: z.string().default(""),
+      multiple_contraction_30pct: z.string().default(""),
+    }).default({}),
+    final_verdict: z.string().default(""),
+    confidence: ConfidenceSchema.default("medium"),
+  }).nullable().default(null),
+
+  // Phase E: Reverse-DCF
+  reverse_dcf: z.object({
+    implied_growth_rate: z.number().nullable().default(null),
+    classification: z.enum(["cheap", "fair", "ambitious", "speculative", "unknown"]).default("unknown"),
+  }).nullable().default(null),
 });
 
 export type Report = z.infer<typeof ReportSchema>;
@@ -154,3 +218,23 @@ export const SectionAnswerSchema = z.object({
   moat_threats: z.array(z.string()).default([]),
 });
 export type SectionAnswer = z.infer<typeof SectionAnswerSchema>;
+
+// Phase C: Red-Team output schema (used for LLM response validation)
+export const RedTeamSchema = z.object({
+  bear_arguments: z.array(z.object({
+    argument: z.string(),
+    rebuttal_of: z.string().default(""),
+    severity: z.enum(["low", "medium", "high"]).default("medium"),
+    probability: z.number().min(0).max(1).default(0.5),
+    sourceIdx: z.number().int().nullable().default(null),
+  })).default([]),
+  overlooked_risks: z.array(z.string()).default([]),
+  stress_test: z.object({
+    revenue_growth_halved: z.string().default(""),
+    margin_compression_5ppt: z.string().default(""),
+    multiple_contraction_30pct: z.string().default(""),
+  }).default({}),
+  final_verdict: z.string().default(""),
+  confidence: ConfidenceSchema.default("medium"),
+});
+export type RedTeam = z.infer<typeof RedTeamSchema>;

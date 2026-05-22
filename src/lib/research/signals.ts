@@ -1,6 +1,7 @@
 import type { KeyMetrics, Report } from "@/lib/schemas/report";
 import { BLOCK_WEIGHTS, type BlockKey } from "@/lib/scoring/weights";
 import type { Category, Confidence } from "@/lib/scoring/gate";
+import { THRESHOLDS } from "./thresholds";
 
 export interface ResearchSignalInput {
   scoreTotal: number;
@@ -45,17 +46,46 @@ export function deriveResearchSignals(input: ResearchSignalInput): ResearchSigna
 
   if (input.coverage < 0.4) redFlags.add("Daten-Coverage < 40%.");
   if (input.confidence === "low") redFlags.add("Niedrige Daten-Confidence.");
-  if (isHigh(km?.share_count_growth_yoy, 0.03)) redFlags.add("Share Count Growth > 3% p.a.");
-  if (isHigh(km?.sbc_to_revenue, 0.1)) redFlags.add("SBC / Revenue > 10%.");
-  if (isHigh(km?.net_debt_to_ebitda, 3)) redFlags.add("Net Debt / EBITDA > 3.");
+  if (isHigh(km?.share_count_growth_yoy, THRESHOLDS.share_count_growth_red_flag)) redFlags.add("Share Count Growth > 3% p.a.");
+  if (isHigh(km?.sbc_to_revenue, THRESHOLDS.sbc_to_revenue_red_flag)) redFlags.add("SBC / Revenue > 10%.");
+  if (isHigh(km?.net_debt_to_ebitda, THRESHOLDS.net_debt_to_ebitda_red_flag)) redFlags.add("Net Debt / EBITDA > 3.");
   if (isLow(km?.fcf_margin, 0)) redFlags.add("FCF-Marge negativ.");
-  if (typeof km?.rule_of_40 === "number" && km.rule_of_40 < 40) redFlags.add("Rule of 40 unter 40.");
+  if (typeof km?.rule_of_40 === "number" && km.rule_of_40 < THRESHOLDS.rule_of_40_floor) redFlags.add("Rule of 40 unter 40.");
 
-  if (isLow(km?.fcf_margin, 0) && isHigh(km?.net_debt_to_ebitda, 3)) {
+  // Phase A: Forensic red flags
+  if (typeof km?.piotroski_f === "number" && km.piotroski_f <= THRESHOLDS.piotroski_weak) {
+    redFlags.add(`Schwacher Piotroski F-Score: ${km.piotroski_f}/9.`);
+  }
+  if (typeof km?.altman_z === "number" && km.altman_z < THRESHOLDS.altman_z_safe && km.altman_z >= THRESHOLDS.altman_z_distress) {
+    redFlags.add(`Altman Z im Graubereich: ${km.altman_z.toFixed(2)}.`);
+  }
+  if (typeof km?.roic_wacc_spread === "number" && km.roic_wacc_spread < THRESHOLDS.roic_wacc_spread_min) {
+    redFlags.add(`ROIC unter WACC (Spread: ${(km.roic_wacc_spread * 100).toFixed(1)} Pp.).`);
+  }
+  // Margin deterioration: trend negative + high stddev
+  if (typeof km?.gross_margin_trend === "number" && km.gross_margin_trend < -0.02) {
+    redFlags.add("Bruttomarge im Abwärtstrend (>2 Pp./Jahr).");
+  }
+  if (typeof km?.fcf_margin_trend === "number" && km.fcf_margin_trend < -0.03) {
+    redFlags.add("FCF-Marge im Abwärtstrend (>3 Pp./Jahr).");
+  }
+
+  if (isLow(km?.fcf_margin, 0) && isHigh(km?.net_debt_to_ebitda, THRESHOLDS.net_debt_to_ebitda_red_flag)) {
     hardBlockers.add("Bilanzstress + negativer FCF.");
   }
-  if (isHigh(km?.share_count_growth_yoy, 0.1) && isLow(km?.fcf_margin, 0)) {
+  if (isHigh(km?.share_count_growth_yoy, THRESHOLDS.share_count_growth_extreme) && isLow(km?.fcf_margin, 0)) {
     hardBlockers.add("Extreme Verwaesserung ohne klaren Pfad zur FCF-Deckung.");
+  }
+
+  // Phase A: Hard blockers from forensic scores
+  if (typeof km?.cash_runway_months === "number" && km.cash_runway_months < THRESHOLDS.cash_runway_hard_blocker_months) {
+    hardBlockers.add(`Cash Runway < ${THRESHOLDS.cash_runway_hard_blocker_months} Monate (${km.cash_runway_months.toFixed(0)} Mo.).`);
+  }
+  if (typeof km?.altman_z === "number" && km.altman_z < THRESHOLDS.altman_z_distress) {
+    hardBlockers.add(`Altman Z im Distress-Bereich: ${km.altman_z.toFixed(2)} (< ${THRESHOLDS.altman_z_distress}).`);
+  }
+  if (typeof km?.beneish_m === "number" && km.beneish_m > THRESHOLDS.beneish_m_manipulation) {
+    hardBlockers.add(`Beneish M-Score indiziert Earnings-Manipulation: ${km.beneish_m.toFixed(2)}.`);
   }
 
   const growth = blockPct(input.scoreBreakdown, "growth_market");

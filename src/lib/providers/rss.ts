@@ -43,6 +43,36 @@ function normalizeTitle(title: string): string {
   return title.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+/**
+ * Phase E: Prompt-Injection-Hardening.
+ * Strips or rejects news content that contains LLM-directive patterns.
+ * This prevents adversarial content in RSS feeds from hijacking the pipeline.
+ */
+const INJECTION_PATTERNS = [
+  /ignore\s+previous\s+instructions?/i,
+  /ignore\s+all\s+instructions?/i,
+  /you\s+are\s+now\s+in\s+developer\s+mode/i,
+  /system\s+prompt/i,
+  /\[INST\]/i,
+  /\<\|im_start\|\>/i,
+  /\<\|system\|\>/i,
+  /\{%\s*system/i,
+  /assistant:\s*\n/i,
+  /human:\s*\n/i,
+  /JAILBREAK/i,
+  /DAN\s+mode/i,
+  /as\s+an\s+AI\s+without\s+restrictions/i,
+  /pretend\s+you\s+are\s+a/i,
+];
+
+function stripInjectionContent(text: string): string {
+  // Remove known injection markers; if found, return truncated/redacted version
+  if (INJECTION_PATTERNS.some((p) => p.test(text))) {
+    return "[REDACTED: potential prompt injection detected]";
+  }
+  return text;
+}
+
 function isUsableNewsItem(
   ticker: string,
   item: { title?: string; link?: string; contentSnippet?: string; content?: string },
@@ -88,15 +118,17 @@ export const rssProvider: DataProvider = {
             .slice(0, 10);
           items.forEach((item, idx) => {
             if (!item.link) return;
+            const rawTitle = item.title ?? "";
+            const rawSnippet = (item.contentSnippet ?? item.content ?? "").substring(0, 400);
             facts.push({
               field: `news_${feed.label.replace(/\s+/g, "")}_${idx}`,
               value: {
-                title: item.title ?? "",
-                snippet: (item.contentSnippet ?? item.content ?? "").substring(0, 400),
+                title: stripInjectionContent(rawTitle),
+                snippet: stripInjectionContent(rawSnippet),
                 isoDate: item.isoDate ?? null,
               },
               url: item.link,
-              title: item.title ?? feed.label,
+              title: stripInjectionContent(rawTitle) || feed.label,
               asOf: item.isoDate ?? undefined,
               klass: feed.klass,
             });

@@ -27,13 +27,25 @@ import {
   SECTION_BLOCKS,
   SUMMARY_SYSTEM,
   SUMMARY_USER,
+  REDTEAM_SYSTEM,
+  REDTEAM_USER,
   type BlockId,
 } from "@/lib/llm/prompts";
 import { computeScore, type IndicatorScore } from "@/lib/scoring/score";
 import { computeGate, canHandoffToTradeEngine, type Category } from "@/lib/scoring/gate";
 import type { BlockKey } from "@/lib/scoring/weights";
+import {
+  computePiotroskiF,
+  computeMohanramG,
+  computeAltmanZ,
+  computeBeneishM,
+} from "@/lib/research/forensics";
+import { classifyBusinessModel } from "@/lib/research/business-model";
+import { findPeerBucket } from "@/lib/research/peer-universe";
+import { computePeerPercentiles, type PeerPercentiles } from "@/lib/research/peer-cache";
+import { detectProviderConflicts, conflictsToRedFlags } from "@/lib/research/conflict-detector";
 import { buildResearchContext } from "@/lib/research/context";
-import { deriveKeyMetrics, mergeDeterministicMetrics } from "@/lib/research/derived-metrics";
+import { deriveKeyMetrics, mergeDeterministicMetrics, type DerivedMetricsResult } from "@/lib/research/derived-metrics";
 import { validateBlockSources } from "@/lib/research/source-validation";
 import { buildMoatAssessment, deriveResearchSignals } from "@/lib/research/signals";
 import {
@@ -42,6 +54,8 @@ import {
   type KeyMetrics,
   ScoreBreakdownSchema,
   KeyMetricsSchema,
+  RedTeamSchema,
+  type RedTeam,
 } from "@/lib/schemas/report";
 import { db, schema } from "@/lib/storage/db";
 import { logRun } from "./events";
@@ -59,6 +73,16 @@ export interface PipelineState {
   providerResults?: ProviderResult[];
   facts?: ProviderFact[];
   derivedMetrics?: Partial<KeyMetrics>;
+  forensicsResult?: {
+    piotroski: ReturnType<typeof computePiotroskiF>;
+    mohanram: ReturnType<typeof computeMohanramG>;
+    altman: ReturnType<typeof computeAltmanZ>;
+    beneish: ReturnType<typeof computeBeneishM>;
+  };
+  businessModelType?: string;
+  peerPercentiles?: PeerPercentiles;
+  redTeam?: RedTeam | null;
+  reverseDcf?: DerivedMetricsResult["reverseDcf"];
   context?: string;
   blockContexts?: Record<BlockId, string>;
   sourceEvidence?: Map<number, string>;
@@ -136,13 +160,31 @@ export async function stepFetchBaseData(state: PipelineState): Promise<void> {
 export async function stepDeriveMetrics(state: PipelineState): Promise<void> {
   const result = deriveKeyMetrics(state.ticker, state.runDate, state.facts ?? []);
   state.derivedMetrics = result.metrics;
+  if (result.forensics) {
+    state.forensicsResult = result.forensics;
+  }
+  if (result.reverseDcf) {
+    state.reverseDcf = result.reverseDcf;
+  }
   if (result.facts.length > 0) {
     state.facts = [...(state.facts ?? []), ...result.facts];
   }
+  const bm = classifyBusinessModel(state.facts ?? [], state.ticker);
+  state.businessModelType = bm.type;
+
+  // Phase E: Detect provider conflicts
+  const conflicts = detectProviderConflicts(state.facts ?? []);
+  const conflictFlags = conflictsToRedFlags(conflicts);
+  if (conflictFlags.length > 0) {
+    logRun(state.runId, "warn", `[conflicts] ${conflicts.length} conflicts detected`);
+    // Pre-populate redFlags so stepComputeScoreAndGate can merge them
+    state.redFlags = [...(state.redFlags ?? []), ...conflictFlags];
+  }
+
   logRun(
     state.runId,
     "info",
-    `[metrics] derived ${Object.keys(result.metrics).length} deterministic key metrics`,
+    `[metrics] derived ${Object.keys(result.metrics).length} deterministic key metrics, businessModel=${bm.type}`,
   );
 }
 
@@ -422,7 +464,101 @@ export async function stepSummarize(state: PipelineState): Promise<void> {
 }
 
 // -----------------------------------------------------------
-// Step 7: persist
+// Step 6b: Red-Team (LLM, conditional on score >= 75)
+// -----------------------------------------------------------
+const REDTEAM_SCORE_THRESHOLD = 75;
+
+export async function stepRedTeam(state: PipelineState): Promise<void> {
+  // Only run when score is high enough to warrant adversarial review
+  if ((state.scoreTotal ?? 0) < REDTEAM_SCORE_THRESHOLD) {
+    logRun(state.runId, "info", `[redteam] skipped (score=${state.scoreTotal} < ${REDTEAM_SCORE_THRESHOLD})`);
+    state.redTeam = null;
+    return;
+  }
+
+  const bullCase = state.thesis?.bull_case ?? [];
+  if (bullCase.length === 0) {
+    logRun(state.runId, "info", "[redteam] skipped (no bull case)");
+    state.redTeam = null;
+    return;
+  }
+
+  // Build a compact metrics summary for the prompt
+  const km = state.keyMetrics;
+  const keyMetricsSummary = km
+    ? [
+        km.revenue_growth_yoy != null ? `Umsatzwachstum YoY: ${(km.revenue_growth_yoy * 100).toFixed(1)}%` : null,
+        km.gross_margin != null ? `Bruttomarge: ${(km.gross_margin * 100).toFixed(1)}%` : null,
+        km.fcf_margin != null ? `FCF-Marge: ${(km.fcf_margin * 100).toFixed(1)}%` : null,
+        km.rule_of_40 != null ? `Rule of 40: ${km.rule_of_40.toFixed(0)}` : null,
+        km.net_debt_to_ebitda != null ? `Net Debt/EBITDA: ${km.net_debt_to_ebitda.toFixed(1)}x` : null,
+        km.ev_sales != null ? `EV/Sales: ${km.ev_sales.toFixed(1)}x` : null,
+        km.piotroski_f != null ? `Piotroski-F: ${km.piotroski_f}/9` : null,
+        km.altman_z != null ? `Altman-Z: ${km.altman_z.toFixed(2)}` : null,
+      ].filter(Boolean).join(", ")
+    : "";
+
+  try {
+    const { data } = await chatJSON<RedTeam>({
+      runId: state.runId,
+      step: "redteam",
+      model: state.modelSummary,
+      system: REDTEAM_SYSTEM,
+      user: REDTEAM_USER(
+        state.ticker,
+        state.category ?? "Transitional",
+        state.scoreTotal ?? 0,
+        bullCase,
+        keyMetricsSummary,
+        state.context ?? "",
+      ),
+      temperature: 0.3,
+      artifactsDir: state.rawDir,
+    });
+    state.redTeam = RedTeamSchema.parse(data);
+    logRun(state.runId, "info", `[redteam] ${state.redTeam.bear_arguments.length} bear arguments`);
+  } catch (err) {
+    logRun(state.runId, "warn", `[redteam] failed: ${String(err)}`);
+    state.redTeam = null;
+  }
+}
+
+// -----------------------------------------------------------
+// Step 7a: computePeerPercentiles (deterministic, no LLM)
+// -----------------------------------------------------------
+export async function stepComputePeerPercentiles(state: PipelineState): Promise<void> {
+  if (!state.keyMetrics || !state.businessModelType) return;
+
+  const revenueTtm = state.keyMetrics.revenue_growth_yoy !== null ? undefined : undefined; // revenue_ttm not in KeyMetrics
+  const bucket = findPeerBucket(state.businessModelType, revenueTtm ?? null);
+  if (!bucket) {
+    logRun(state.runId, "info", `[peer] no bucket found for businessModel=${state.businessModelType}`);
+    return;
+  }
+
+  const result = computePeerPercentiles(state.keyMetrics, bucket);
+  state.peerPercentiles = result;
+
+  // Persist to DB
+  db.insert(schema.peerMetrics).values({
+    reportId: state.reportId ?? "pending",
+    ticker: state.ticker,
+    bucketId: bucket.bucketId,
+    computedAt: Date.now(),
+    percentilesJson: JSON.stringify(result.percentiles),
+    vsMedianJson: JSON.stringify(result.vsMedian),
+    computedKeys: JSON.stringify(result.computed),
+  }).run();
+
+  logRun(
+    state.runId,
+    "info",
+    `[peer] bucket=${bucket.bucketId} computed ${result.computed.length} percentiles`,
+  );
+}
+
+// -----------------------------------------------------------
+// Step 8: persist
 // -----------------------------------------------------------
 function ulid(): string {
   // einfacher ULID-ähnlicher String, ausreichend für lokales SQLite-PK
@@ -498,6 +634,23 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
       category: state.category!,
       hardBlockers: state.hardBlockers!,
     }),
+    // Phase A: forensics & business model
+    business_model_type: state.businessModelType ?? "",
+    piotroski_components: state.forensicsResult?.piotroski?.components ?? {},
+    mohanram_components: state.forensicsResult?.mohanram?.components ?? {},
+    altman_classification: state.forensicsResult?.altman?.classification ?? null,
+    beneish_manipulation_probability: state.forensicsResult?.beneish?.manipulationProbability ?? null,
+
+    // Phase C: Red-Team
+    red_team: state.redTeam ?? null,
+
+    // Phase E: Reverse-DCF
+    reverse_dcf: state.reverseDcf
+      ? {
+          implied_growth_rate: state.reverseDcf.impliedGrowthRate ?? null,
+          classification: state.reverseDcf.classification ?? "unknown",
+        }
+      : null,
   });
 
   const reportsDir = path.join(DATA_DIR, "reports", state.ticker.toUpperCase());

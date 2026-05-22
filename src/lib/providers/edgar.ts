@@ -198,3 +198,212 @@ export const edgarProvider: DataProvider = {
     }
   },
 };
+
+// ---------------------------------------------------------------------------
+// Phase D helpers (non-provider, called from stepFetchBaseData if enabled)
+// ---------------------------------------------------------------------------
+
+export interface TenKSections {
+  risk_factors: string;       // Item 1A
+  mda: string;                // Item 7 — Management Discussion & Analysis
+  business: string;           // Item 1
+  accn: string;
+  filed: string;
+}
+
+const TENK_SECTION_MAX_CHARS = 8_000; // truncate to keep context manageable
+
+/**
+ * Fetches the most recent 10-K filing text from EDGAR and extracts key sections.
+ * Returns null when CIK not found or filing not available.
+ */
+export async function fetch10KSections(
+  ticker: string,
+  log: (msg: string) => void = () => {},
+): Promise<TenKSections | null> {
+  try {
+    const idx = await loadTickerIndex();
+    const entry = idx.get(ticker.toUpperCase());
+    if (!entry) return null;
+    const { cik } = entry;
+
+    const subRes = await throttledFetch(
+      `https://data.sec.gov/submissions/CIK${cik}.json`,
+      { headers: { "User-Agent": UA, Accept: "application/json" } },
+      { ratePerSec: 8 },
+    );
+    if (!subRes.ok) return null;
+    const subs = (await subRes.json()) as Submissions;
+    const recent = subs.filings?.recent;
+    if (!recent?.form) return null;
+
+    // Find most recent 10-K
+    const idx10K = recent.form.findIndex((f) => f === "10-K");
+    if (idx10K < 0) return null;
+
+    const accn = recent.accessionNumber?.[idx10K];
+    const doc = recent.primaryDocument?.[idx10K];
+    const filed = recent.filingDate?.[idx10K];
+    if (!accn || !doc || !filed) return null;
+
+    const accnNoDash = accn.replace(/-/g, "");
+    const cikInt = parseInt(cik, 10);
+    const docUrl = `https://www.sec.gov/Archives/edgar/data/${cikInt}/${accnNoDash}/${doc}`;
+
+    const docRes = await throttledFetch(
+      docUrl,
+      { headers: { "User-Agent": UA, Accept: "text/html,text/plain" } },
+      { ratePerSec: 4 }, // slower for HTML docs
+    );
+    if (!docRes.ok) return null;
+
+    const html = await docRes.text();
+    // Strip HTML tags for section extraction
+    const text = html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+
+    function extractSection(marker: RegExp, endMarker: RegExp): string {
+      const startMatch = marker.exec(text);
+      if (!startMatch) return "";
+      const start = startMatch.index + startMatch[0].length;
+      const endMatch = endMarker.exec(text.slice(start));
+      const end = endMatch ? start + endMatch.index : start + 20_000;
+      return text.slice(start, end).trim().slice(0, TENK_SECTION_MAX_CHARS);
+    }
+
+    const risk_factors = extractSection(
+      /item\s+1a[\s.–—:]+risk\s+factors/i,
+      /item\s+1b[\s.–—:]/i,
+    );
+    const mda = extractSection(
+      /item\s+7[\s.–—:]+management.{0,30}discussion/i,
+      /item\s+7a[\s.–—:]/i,
+    );
+    const business = extractSection(
+      /item\s+1[\s.–—:]+business/i,
+      /item\s+1a[\s.–—:]/i,
+    );
+
+    log(`edgar 10-K: extracted risk_factors=${risk_factors.length}c mda=${mda.length}c`);
+    return { risk_factors, mda, business, accn, filed };
+  } catch (err) {
+    log(`edgar fetch10KSections error: ${String(err)}`);
+    return null;
+  }
+}
+
+export interface InsiderActivity {
+  netBuyUsd: number;           // positive=net buy, negative=net sell
+  topTransactions: Array<{
+    insiderName: string;
+    title: string;
+    transactionType: "P" | "S" | "A" | "D"; // purchase/sale/award/disposition
+    shares: number;
+    pricePerShare: number | null;
+    valueUsd: number | null;
+    transactionDate: string;
+  }>;
+  periodDays: number;
+  filingCount: number;
+}
+
+/**
+ * Fetches Form 4 filings for insider transaction summary.
+ * Returns last `lookbackDays` days of insider activity.
+ */
+export async function fetchForm4Summary(
+  ticker: string,
+  lookbackDays = 180,
+  log: (msg: string) => void = () => {},
+): Promise<InsiderActivity | null> {
+  try {
+    const idx = await loadTickerIndex();
+    const entry = idx.get(ticker.toUpperCase());
+    if (!entry) return null;
+    const { cik } = entry;
+
+    const subRes = await throttledFetch(
+      `https://data.sec.gov/submissions/CIK${cik}.json`,
+      { headers: { "User-Agent": UA, Accept: "application/json" } },
+      { ratePerSec: 8 },
+    );
+    if (!subRes.ok) return null;
+    const subs = (await subRes.json()) as Submissions;
+    const recent = subs.filings?.recent;
+    if (!recent?.form) return null;
+
+    const cutoff = new Date(Date.now() - lookbackDays * 86_400_000).toISOString().slice(0, 10);
+    const transactions: InsiderActivity["topTransactions"] = [];
+    let netBuyUsd = 0;
+    let filingCount = 0;
+
+    for (let i = 0; i < (recent.form.length ?? 0); i++) {
+      const form = recent.form[i];
+      const filed = recent.filingDate?.[i];
+      if (form !== "4" || !filed || filed < cutoff) continue;
+
+      filingCount++;
+      // We parse Form 4 XML to extract transactions (best-effort)
+      const accn = recent.accessionNumber?.[i];
+      if (!accn) continue;
+      const accnNoDash = accn.replace(/-/g, "");
+      const cikInt = parseInt(cik, 10);
+      // The primary document for Form 4 is typically an XML file
+      const xmlUrl = `https://www.sec.gov/Archives/edgar/data/${cikInt}/${accnNoDash}/${recent.primaryDocument?.[i] ?? ""}`;
+
+      try {
+        const xmlRes = await throttledFetch(
+          xmlUrl,
+          { headers: { "User-Agent": UA } },
+          { ratePerSec: 4 },
+        );
+        if (!xmlRes.ok) continue;
+        const xml = await xmlRes.text();
+
+        // Simple regex-based extraction (avoids XML parser dependency)
+        const rptOwner = /<rptOwnerName>([^<]*)<\/rptOwnerName>/i.exec(xml)?.[1] ?? "Unknown";
+        const rptTitle = /<officerTitle>([^<]*)<\/officerTitle>/i.exec(xml)?.[1] ?? "";
+        const txnCode = /<transactionCode>([^<]*)<\/transactionCode>/i.exec(xml)?.[1] ?? "?";
+        const txnDate = /<transactionDate>\s*<value>([^<]*)<\/value>/i.exec(xml)?.[1] ?? filed;
+        const sharesStr = /<transactionShares>\s*<value>([^<]*)<\/value>/i.exec(xml)?.[1] ?? "0";
+        const priceStr = /<transactionPricePerShare>\s*<value>([^<]*)<\/value>/i.exec(xml)?.[1];
+
+        const shares = parseFloat(sharesStr) || 0;
+        const price = priceStr ? parseFloat(priceStr) : null;
+        const valueUsd = price !== null ? shares * price : null;
+
+        // P/S = Purchase / Sale
+        const isBuy = txnCode === "P";
+        const isSell = txnCode === "S";
+        if (valueUsd !== null) {
+          if (isBuy) netBuyUsd += valueUsd;
+          if (isSell) netBuyUsd -= valueUsd;
+        }
+
+        if (isBuy || isSell) {
+          transactions.push({
+            insiderName: rptOwner,
+            title: rptTitle,
+            transactionType: txnCode as "P" | "S" | "A" | "D",
+            shares,
+            pricePerShare: price,
+            valueUsd,
+            transactionDate: txnDate,
+          });
+        }
+      } catch {
+        // skip individual filing parse errors
+      }
+    }
+
+    log(`edgar Form4: ${filingCount} filings, netBuy=$${(netBuyUsd / 1e6).toFixed(2)}M`);
+    return {
+      netBuyUsd,
+      topTransactions: transactions.slice(0, 20),
+      periodDays: lookbackDays,
+      filingCount,
+    };
+  } catch (err) {
+    log(`edgar fetchForm4Summary error: ${String(err)}`);
+    return null;
+  }
+}

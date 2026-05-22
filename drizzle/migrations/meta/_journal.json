@@ -8,6 +8,13 @@
       "when": 1779300793790,
       "tag": "0000_brown_sabretooth",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1779400000000,
+      "tag": "0001_peer_metrics",
+      "breakpoints": true
     }
   ]
 }

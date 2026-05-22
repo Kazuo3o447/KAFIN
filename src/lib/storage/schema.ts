@@ -78,3 +78,21 @@ export const sources = sqliteTable(
     reportIdx: index("sources_report_idx").on(t.reportId),
   }),
 );
+
+export const peerMetrics = sqliteTable(
+  "peer_metrics",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    reportId: text("report_id").notNull(),
+    ticker: text("ticker").notNull(),
+    bucketId: text("bucket_id").notNull(),
+    computedAt: integer("computed_at").notNull(),
+    percentilesJson: text("percentiles_json").notNull(),  // JSON object
+    vsMedianJson: text("vs_median_json").notNull(),       // JSON object
+    computedKeys: text("computed_keys").notNull(),        // JSON array of keys
+  },
+  (t) => ({
+    reportIdx: index("peer_metrics_report_idx").on(t.reportId),
+    tickerIdx: index("peer_metrics_ticker_idx").on(t.ticker),
+  }),
+);

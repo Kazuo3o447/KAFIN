@@ -118,3 +118,55 @@ Liefere JSON:
   "open_questions": [string],
   "falsification_tests": [string]
 }`;
+
+// ---------------------------------------------------------------------------
+// Red-Team Agent (Phase C)
+// ---------------------------------------------------------------------------
+export const REDTEAM_SYSTEM = `Du bist ein kritischer Red-Team-Analyst.
+Deine Aufgabe: Finde die STÄRKSTEN Gegenargumente zur Investmentthese.
+Sei skeptisch, nicht destruktiv. Arbeite faktenbasiert.
+${COMMON_RULES}`;
+
+export const REDTEAM_USER = (
+  ticker: string,
+  category: string,
+  scoreTotal: number,
+  bullCase: string[],
+  keyMetricsSummary: string,
+  context: string,
+) => `TICKER: ${ticker}
+KATEGORIE: ${category} | SCORE: ${scoreTotal}/100
+
+BULL-CASE (zu hinterfragen):
+${bullCase.map((b, i) => `${i + 1}. ${b}`).join("\n")}
+
+QUANTITATIVE KENNZAHLEN (Fakten):
+${keyMetricsSummary}
+
+KONTEXT (für Belege):
+${context}
+
+Analysiere die Bull-Case-Argumente kritisch.
+Identifiziere: falsche Annahmen, cherry-picking, strukturelle Risiken, blinde Flecken.
+Schätze die realistische Eintrittswahrscheinlichkeit der Bull-Case-Szenarien.
+
+Liefere JSON:
+{
+  "bear_arguments": [
+    {
+      "argument": string,
+      "rebuttal_of": string,
+      "severity": "low"|"medium"|"high",
+      "probability": number,
+      "sourceIdx": number|null
+    }
+  ],
+  "overlooked_risks": [string],
+  "stress_test": {
+    "revenue_growth_halved": string,
+    "margin_compression_5ppt": string,
+    "multiple_contraction_30pct": string
+  },
+  "final_verdict": string,
+  "confidence": "low"|"medium"|"high"
+}`;

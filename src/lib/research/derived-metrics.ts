@@ -1,9 +1,25 @@
 import type { ProviderFact } from "@/lib/providers/types";
 import { KeyMetricsSchema, type KeyMetrics } from "@/lib/schemas/report";
+import {
+  computePiotroskiF,
+  computeMohanramG,
+  computeAltmanZ,
+  computeBeneishM,
+} from "./forensics";
+import { THRESHOLDS } from "./thresholds";
+import { computeReverseDCF, type ReverseDCFResult } from "./reverse-dcf";
 
 export interface DerivedMetricsResult {
   metrics: Partial<KeyMetrics>;
   facts: ProviderFact[];
+  /** Forensic score detail objects — stored separately for report schema */
+  forensics?: {
+    piotroski: ReturnType<typeof computePiotroskiF>;
+    mohanram: ReturnType<typeof computeMohanramG>;
+    altman: ReturnType<typeof computeAltmanZ>;
+    beneish: ReturnType<typeof computeBeneishM>;
+  };
+  reverseDcf?: ReverseDCFResult;
 }
 
 type MetricKey = keyof KeyMetrics;
@@ -25,6 +41,20 @@ const DERIVED_KEYS: MetricKey[] = [
   "ev_sales",
   "ev_gross_profit",
   "peg",
+  // Phase A additions
+  "piotroski_f",
+  "mohanram_g",
+  "altman_z",
+  "beneish_m",
+  "cash_runway_months",
+  "wacc",
+  "roic_wacc_spread",
+  "gross_margin_trend",
+  "operating_margin_trend",
+  "fcf_margin_trend",
+  "gross_margin_stddev",
+  "operating_margin_stddev",
+  "fcf_margin_stddev",
 ];
 
 function toNumber(value: unknown): number | null {
@@ -283,7 +313,142 @@ export function deriveKeyMetrics(ticker: string, runDate: string, facts: Provide
     fcfMargin: metrics.fcf_margin,
   });
 
-  return { metrics, facts: derivedFacts };
+  // -----------------------------------------------------------------------
+  // Phase A: Forensic scores
+  // -----------------------------------------------------------------------
+  const piotroski = computePiotroskiF(facts);
+  if (piotroski.score !== null) add("piotroski_f", piotroski.score, "Piotroski F-Score (0..9)");
+
+  const mohanram = computeMohanramG(facts);
+  if (mohanram.score !== null) add("mohanram_g", mohanram.score, "Mohanram G-Score (0..8)");
+
+  const altman = computeAltmanZ(facts);
+  if (altman.score !== null) add("altman_z", altman.score, "Altman Z-Score");
+
+  const beneish = computeBeneishM(facts);
+  if (beneish.score !== null) add("beneish_m", beneish.score, "Beneish M-Score");
+
+  // -----------------------------------------------------------------------
+  // Phase A: Cash Runway
+  // -----------------------------------------------------------------------
+  const cashBalance = totalCash ?? latestNumber(facts, "cash_and_equivalents");
+  const cfoForRunway = latestNumber(facts, "operating_cash_flow") ??
+    firstDatasetNumber(facts, ["cashflow"], ["operatingCashFlow", "netCashProvidedByOperatingActivities"]);
+  if (cashBalance !== null && cfoForRunway !== null && cfoForRunway < 0) {
+    // Monthly burn = -cfo / 12 (annual → monthly)
+    const monthlyBurn = (-cfoForRunway) / 12;
+    if (monthlyBurn > 0) {
+      const runway = cashBalance / monthlyBurn;
+      add("cash_runway_months", runway, "cash_balance / monthly_cash_burn", { cashBalance, monthlyBurn });
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Phase A: WACC approximation + ROIC–WACC spread
+  // -----------------------------------------------------------------------
+  const betaForWacc = metrics.beta ?? (beta !== null ? beta : 1.0);
+  const rf = THRESHOLDS.wacc_risk_free_rate;
+  const erp = THRESHOLDS.wacc_equity_risk_premium;
+  const costOfEquity = rf + betaForWacc * erp;
+
+  // Debt weight: rough proxy — net_debt / enterprise_value
+  const ev = enterpriseValue ?? latestNumber(facts, "enterprise_value");
+  const netDebt = totalDebt !== null && totalCash !== null ? totalDebt - totalCash : null;
+  const debtWeight = ev !== null && ev > 0 && netDebt !== null && netDebt > 0 ? netDebt / ev : 0;
+  const equityWeight = 1 - debtWeight;
+  const afterTaxCostOfDebt = THRESHOLDS.wacc_cost_of_debt * (1 - THRESHOLDS.wacc_tax_rate);
+  const wacc = equityWeight * costOfEquity + debtWeight * afterTaxCostOfDebt;
+  add("wacc", wacc, "CAPM + debt blend: equity_weight*cost_equity + debt_weight*after_tax_cost_debt", {
+    betaForWacc, rf, erp, costOfEquity, debtWeight, equityWeight, afterTaxCostOfDebt,
+  });
+
+  const roicVal = metrics.roic ?? null;
+  if (roicVal !== null && wacc > 0) {
+    add("roic_wacc_spread", roicVal - wacc, "roic - wacc", { roic: roicVal, wacc });
+  }
+
+  // -----------------------------------------------------------------------
+  // Phase A: Margin trends (linear slope over annual series)
+  // -----------------------------------------------------------------------
+  function computeMarginSeries(
+    revenueSeriesIn: Array<{ date: string; value: number }>,
+    profitField: string[],
+    profitKeys: string[],
+  ): Array<{ date: string; margin: number }> {
+    const profitSeries = seriesFromDataset(facts, profitField, profitKeys);
+    const result: Array<{ date: string; margin: number }> = [];
+    for (const rev of revenueSeriesIn) {
+      const prof = profitSeries.find((p) => p.date === rev.date);
+      if (!prof || rev.value <= 0) continue;
+      result.push({ date: rev.date, margin: prof.value / rev.value });
+    }
+    return result.sort((a, b) => a.date.localeCompare(b.date)); // ascending
+  }
+
+  function linearSlope(series: Array<{ date: string; margin: number }>): number | null {
+    const n = series.length;
+    if (n < 2) return null;
+    // x = 0,1,...,n-1 (years from oldest)
+    const xMean = (n - 1) / 2;
+    const yMean = series.reduce((s, p) => s + p.margin, 0) / n;
+    let num = 0;
+    let den = 0;
+    for (let i = 0; i < n; i++) {
+      const pt = series[i];
+      if (!pt) continue;
+      num += (i - xMean) * (pt.margin - yMean);
+      den += (i - xMean) ** 2;
+    }
+    return den > 0 ? num / den : null;
+  }
+
+  function stdDev(series: Array<{ date: string; margin: number }>): number | null {
+    if (series.length < 2) return null;
+    const mean = series.reduce((s, p) => s + p.margin, 0) / series.length;
+    const variance = series.reduce((s, p) => s + (p.margin - mean) ** 2, 0) / (series.length - 1);
+    return Math.sqrt(variance);
+  }
+
+  const gmSeries = computeMarginSeries(
+    revenueSeries,
+    ["income_statement", "income-statement", "av_income_statement"],
+    ["grossProfit", "gross_profit"],
+  );
+  const gmSlope = linearSlope(gmSeries);
+  const gmStddev = stdDev(gmSeries);
+  if (gmSlope !== null) add("gross_margin_trend", gmSlope, "linear slope of gross margin over annual series");
+  if (gmStddev !== null) add("gross_margin_stddev", gmStddev, "stddev of gross margin over annual series");
+
+  const omSeries = computeMarginSeries(
+    revenueSeries,
+    ["income_statement", "income-statement", "av_income_statement"],
+    ["operatingIncome", "operating_income", "ebit"],
+  );
+  const omSlope = linearSlope(omSeries);
+  const omStddev = stdDev(omSeries);
+  if (omSlope !== null) add("operating_margin_trend", omSlope, "linear slope of operating margin over annual series");
+  if (omStddev !== null) add("operating_margin_stddev", omStddev, "stddev of operating margin over annual series");
+
+  const fcfSeries = computeMarginSeries(
+    revenueSeries,
+    ["cashflow", "cash-flow", "av_cash_flow"],
+    ["freeCashFlow", "freeCashflow"],
+  );
+  const fcfSlope = linearSlope(fcfSeries);
+  const fcfStddev = stdDev(fcfSeries);
+  if (fcfSlope !== null) add("fcf_margin_trend", fcfSlope, "linear slope of fcf margin over annual series");
+  if (fcfStddev !== null) add("fcf_margin_stddev", fcfStddev, "stddev of fcf margin over annual series");
+
+  // -----------------------------------------------------------------------
+  // Phase E: Reverse-DCF
+  // -----------------------------------------------------------------------
+  const reverseDcf = computeReverseDCF(
+    ev,
+    freeCashflow,
+    metrics.wacc ?? null,
+  );
+
+  return { metrics, facts: derivedFacts, forensics: { piotroski, mohanram, altman, beneish }, reverseDcf };
 }
 
 export function mergeDeterministicMetrics(base: KeyMetrics, deterministic: Partial<KeyMetrics> | undefined): KeyMetrics {

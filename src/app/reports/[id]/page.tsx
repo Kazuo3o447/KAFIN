@@ -14,6 +14,7 @@ import { SourceList } from "@/components/SourceList";
 import { ExportButtons } from "@/components/ExportButtons";
 import { PinButton } from "@/components/PinButton";
 import { AuditTabsClient } from "./AuditTabsClient";
+import { RedTeamPanel } from "@/components/RedTeamPanel";
 import { BLOCK_WEIGHTS, BLOCK_LABELS, type BlockKey } from "@/lib/scoring/weights";
 
 export const dynamic = "force-dynamic";
@@ -171,6 +172,15 @@ export default function ReportDashboardPage({
           <KpiCard label="EV / Gross Profit" value={km.ev_gross_profit} />
           <KpiCard label="NTM P/E" value={km.ntm_pe} />
           <KpiCard label="Beta" value={km.beta} />
+          {/* Phase A: Forensic scores */}
+          <KpiCard label="Piotroski F" value={km.piotroski_f} unit="/9" />
+          <KpiCard label="Mohanram G" value={km.mohanram_g} unit="/8" />
+          <KpiCard label="Altman Z" value={km.altman_z} />
+          <KpiCard label="Beneish M" value={km.beneish_m} />
+          <KpiCard label="Cash Runway" value={km.cash_runway_months} unit="Mo" />
+          <KpiCard label="WACC" value={formatPct(km.wacc)} unit="%" />
+          <KpiCard label="ROIC–WACC" value={formatPct(km.roic_wacc_spread)} unit="Pp" />
+          <KpiCard label="Gross Margin Trend" value={formatPct(km.gross_margin_trend)} unit="Pp/J" />
         </div>
       </section>
 
@@ -307,6 +317,16 @@ export default function ReportDashboardPage({
           </ul>
         </GlassCard>
       </section>
+
+      {/* Red-Team-Analyse */}
+      {report.red_team ? (
+        <GlassCard variant="red" className="p-4">
+          <h2 className="text-sm uppercase tracking-wide text-red-400 mb-3">
+            Red-Team-Analyse
+          </h2>
+          <RedTeamPanel redTeam={report.red_team} />
+        </GlassCard>
+      ) : null}
 
       {/* Quellen */}
       <GlassCard className="p-4">
