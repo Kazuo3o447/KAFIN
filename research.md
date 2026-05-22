@@ -1489,3 +1489,68 @@ Fällt eine der drei Huerden aus, gibt es keinen Paper-Trade.
 Der wichtigste Satz fuer alle Agenten lautet:
 
 > Wir suchen keine Story-Aktien. Wir suchen quellenbasiert belegbare Wachstumsthesen, die erst nach separater Markt-, Setup- und Risiko-Pruefung als Paper-Trading-Idee simuliert werden duerfen.
+
+---
+
+## 38. Forensic-Score-Methodik (Phase A)
+
+Die Plattform berechnet vier forensische Scores pro Report:
+
+- **Piotroski F-Score** (0–9): Fundamentale Finanzkraft. 9 binäre Signale aus Profitabilität, Verschuldung, Kapitaleffizienz.
+- **Mohanram G-Score** (0–8): Wachstumsqualität speziell für Growth-Aktien.
+- **Altman Z-Score**: Insolvenzwahrscheinlichkeit (>2.99 = sicher, 1.81–2.99 = Grauzone, <1.81 = Distress).
+- **Beneish M-Score**: Earnings-Manipulation-Indikator (<-2.22 = unwahrscheinlich, >-1.78 = möglicherweise).
+
+Zusätzliche Metriken: WACC (Kapitalkosten), ROIC-WACC-Spread (Wertschöpfung), Cash-Runway (Monate), Margin-Trends und -Stabilität.
+
+---
+
+## 39. Fair-Value-Methodik (Phase F)
+
+Die Plattform berechnet einen deterministischen Fair-Value als gewichteten Median aus bis zu drei Methoden:
+
+### Methoden
+
+| Methode | Anwendbar wenn | Gewicht |
+|---|---|---|
+| EV/Sales | Peer-Median EV/Sales vorhanden | 0.35 |
+| EV/Gross Profit | Peer-Median EV/GP vorhanden | 0.40 |
+| Forward P/E | NTM P/E im Bericht vorhanden | 0.25 |
+
+### Klassifizierung
+
+| Klassifizierung | Bedingung |
+|---|---|
+| `deep_value` | Upside > +30 % |
+| `value` | Upside +10 % bis +30 % |
+| `fair` | Upside ±10 % |
+| `premium` | Downside −10 % bis −30 % |
+| `overvalued` | Downside > −30 % |
+
+- Skala: −50 % bis +50 %. Außerhalb → `offScale`-Flag.
+- Konfidenz: `high` (3 Methoden, gleiche Währung), `medium` (2), `low` (1 oder Währungs-Mismatch).
+- Währungs-Mismatch (nicht-USD + Peer-Daten): Konfidenz → `low` + Warnung.
+- WACC-Annahmen: 10 % (Growth-Modelle), 8 % (Value-Modelle).
+
+Siehe `F-011` in FUTURE.md für sektorale ERP-Erweiterung.
+
+---
+
+## 40. Verdict-Generierung (Phase F)
+
+Das Verdict ist ein deterministischer Label (≤70 Zeichen) + ein LLM-generierter Detail-Satz (≤25 Wörter, keine Kauf/Verkauf-Empfehlung).
+
+### Priorität der Verdict-Labels
+
+1. **Hard-Blocker vorhanden** → `"⛔ {BlockerKürzel}"` (z. B. "⛔ Bilanzstress")
+2. **Gate Red** → `"Strukturelle Risiken – kein Setup"`
+3. **Gate Yellow + overvalued** → `"Bewertung extrem – Qualität solide"`
+4. **Gate Yellow + schwächster Block** → `"Schwäche: {BlockLabel}"`
+5. **Gate Green + deep_value** → `"Kaufenswerte Qualität, deutlich unter Fair Value"`
+6. **Gate Green + value** → `"Solide Qualität, leicht unter Fair Value"`
+7. **Gate Green + fair/premium** → `"Qualität im fairen Bereich"` / `"Gute Qualität, leicht überteuert"`
+8. **Gate Green + overvalued** → `"Hohe Qualität, signifikant überteuert"`
+
+FORBIDDEN_WORDS: kauf, kaufen, verkaufen, halten, buy, sell, hold, target, kursziel, empfehlung.
+
+LLM-Fallback: wenn Detail-Generierung fehlschlägt oder FORBIDDEN_WORDS enthält → leer.

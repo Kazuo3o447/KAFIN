@@ -15,6 +15,8 @@ import {
   stepComputeScoreAndGate,
   stepSummarize,
   stepRedTeam,
+  stepComputeFairValue,
+  stepGenerateVerdict,
   stepComputePeerPercentiles,
   stepPersist,
   resolveModels,
@@ -33,11 +35,13 @@ const PRE_STEPS: Array<{ key: string; label: string; pct: number; fn: (s: Pipeli
 
 // Sequentielle Steps nach dem parallelen LLM-Block
 const POST_STEPS: Array<{ key: string; label: string; pct: number; fn: (s: PipelineState) => Promise<unknown> }> = [
-  { key: "score", label: "Scoring & Gate", pct: 80, fn: stepComputeScoreAndGate },
-  { key: "summary", label: "Zusammenfassung (LLM)", pct: 87, fn: stepSummarize },
-  { key: "redteam", label: "Red-Team-Analyse (LLM, conditional)", pct: 92, fn: stepRedTeam },
-  { key: "peer", label: "Peer-Percentile-Analyse", pct: 95, fn: stepComputePeerPercentiles },
-  { key: "persist", label: "Persistieren", pct: 100, fn: stepPersist },
+  { key: "score",       label: "Scoring & Gate",                   pct: 70, fn: stepComputeScoreAndGate },
+  { key: "peer",        label: "Peer-Percentile-Analyse",          pct: 75, fn: stepComputePeerPercentiles },
+  { key: "fair_value",  label: "Fair-Value-Berechnung",            pct: 78, fn: stepComputeFairValue },
+  { key: "summary",     label: "Zusammenfassung (LLM)",            pct: 86, fn: stepSummarize },
+  { key: "redteam",     label: "Red-Team-Prüfung (LLM, bedingt)", pct: 92, fn: stepRedTeam },
+  { key: "verdict",     label: "Verdict-Generation (LLM)",         pct: 96, fn: stepGenerateVerdict },
+  { key: "persist",     label: "Persistieren",                     pct: 100, fn: stepPersist },
 ];
 
 export interface StartRunInput {

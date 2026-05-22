@@ -61,3 +61,10 @@
 - **Kontext:** `research.md` §20 definiert die Übergabe an die Trade-Engine. Trade-Engine selbst ist out-of-scope.
 - **Trigger:** nachdem Research-Reports stabil und reproduzierbar laufen.
 - **Status:** offen.
+
+### F-011 · Sektorale ERP / professionelle WACC-Schätzung
+- **Kontext:** Phase F.1 verwendet einen vereinfachten WACC (10 % für Growth, 8 % für Value-Modelle). Für präzisere Fair-Value-Schätzungen sollte der Equity Risk Premium (ERP) sektoral differenziert werden (z. B. Damodaran-ERP-Tabellen je Land/Sektor).
+- **Optionen:** (a) ERP-Lookup-Tabelle statisch eingebettet (einfach, infrequentes Update), (b) API-Anbindung zu Damodaran-Daten (automatisch aber komplex), (c) benutzer-konfigurierbare WACC-Override in Settings.
+- **Empfehlung:** Option (a) als erster Schritt; jährliches Update der ERP-Tabelle als Maintenance-Task.
+- **Trigger:** wenn Fair-Value-Abweichungen von +/- 30 % im Schnitt von DCF-Analysen gemessen werden.
+- **Status:** offen.

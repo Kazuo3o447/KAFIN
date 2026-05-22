@@ -170,3 +170,30 @@ Liefere JSON:
   "final_verdict": string,
   "confidence": "low"|"medium"|"high"
 }`;
+
+// ---------------------------------------------------------------------------
+// Verdict-Detail (Phase F.2)
+// ---------------------------------------------------------------------------
+export const VERDICT_DETAIL_SYSTEM = `Du formulierst eine einzelne, sachliche Erklaerung
+zum Research-Verdict. Maximal 25 Woerter. Keine Adjektive wie "stark", "schwach", "exzellent"
+ueber die Aktie selbst — beschreibe nur die Daten-Tatsachen.
+Verbotene Woerter: kaufen, verkaufen, halten, target, Kursziel, Empfehlung, Buy, Sell, Hold, Strong Buy, Strong Sell.
+Antworte ausschliesslich mit einem JSON-Objekt: { "detail": string }`;
+
+export const VERDICT_DETAIL_USER = (input: {
+  ticker: string;
+  label: string;
+  reasonCode: string;
+  weakestBlock: string | null;
+  topStrengths: string[];
+  topConcerns: string[];
+}) => `TICKER: ${input.ticker}
+LABEL: ${input.label}
+REASON_CODE: ${input.reasonCode}
+SCHWAECHSTER_BLOCK: ${input.weakestBlock ?? "—"}
+STAERKEN: ${input.topStrengths.join(", ")}
+SORGEN: ${input.topConcerns.join(", ")}
+
+Formuliere genau einen Satz (max 25 Woerter), der das Label inhaltlich begruendet.
+Keine Kauf-/Verkaufs-Empfehlungen. Nur Daten-Tatsachen.
+Liefere JSON: { "detail": string }`;

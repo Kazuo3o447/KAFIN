@@ -33,7 +33,7 @@ import {
 } from "@/lib/llm/prompts";
 import { computeScore, type IndicatorScore } from "@/lib/scoring/score";
 import { computeGate, canHandoffToTradeEngine, type Category } from "@/lib/scoring/gate";
-import type { BlockKey } from "@/lib/scoring/weights";
+import { BLOCK_WEIGHTS, type BlockKey } from "@/lib/scoring/weights";
 import {
   computePiotroskiF,
   computeMohanramG,
@@ -48,6 +48,9 @@ import { buildResearchContext } from "@/lib/research/context";
 import { deriveKeyMetrics, mergeDeterministicMetrics, type DerivedMetricsResult } from "@/lib/research/derived-metrics";
 import { validateBlockSources } from "@/lib/research/source-validation";
 import { buildMoatAssessment, deriveResearchSignals } from "@/lib/research/signals";
+import { computeFairValue, type FairValueResult, type FairValueReverseDcfCheck } from "@/lib/research/fair-value";
+import { buildVerdict, sanitizeVerdictDetail, type VerdictResult } from "@/lib/research/verdict";
+import { VERDICT_DETAIL_SYSTEM, VERDICT_DETAIL_USER } from "@/lib/llm/prompts";
 import {
   ReportSchema,
   type Report,
@@ -83,6 +86,8 @@ export interface PipelineState {
   peerPercentiles?: PeerPercentiles;
   redTeam?: RedTeam | null;
   reverseDcf?: DerivedMetricsResult["reverseDcf"];
+  fairValue?: FairValueResult | null;
+  verdict?: VerdictResult & { detail: string } | null;
   context?: string;
   blockContexts?: Record<BlockId, string>;
   sourceEvidence?: Map<number, string>;
@@ -524,7 +529,160 @@ export async function stepRedTeam(state: PipelineState): Promise<void> {
 }
 
 // -----------------------------------------------------------
-// Step 7a: computePeerPercentiles (deterministic, no LLM)
+// Step 7a: computeFairValue (deterministic)
+// -----------------------------------------------------------
+
+/** Helper: get latest numeric fact value */
+function latestNumFact(facts: ProviderFact[], field: string): number | null {
+  const match = facts
+    .filter((f) => f.field === field)
+    .sort((a, b) => (b.asOf ?? "").localeCompare(a.asOf ?? ""))[0];
+  if (!match) return null;
+  const v = match.value;
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const n = Number(v.replace(/,/g, ""));
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+/** Compute current net debt from facts: totalDebt - cash */
+function computeNetDebtFromFacts(facts: ProviderFact[]): number | null {
+  const totalDebt = latestNumFact(facts, "total_debt") ?? latestNumFact(facts, "long_term_debt");
+  const cash = latestNumFact(facts, "cash_and_equivalents") ?? latestNumFact(facts, "cash");
+  if (totalDebt === null && cash === null) return null;
+  return (totalDebt ?? 0) - (cash ?? 0);
+}
+
+/** Pick top N blocks by score (as string keys) */
+function pickTopBlocks(breakdown: Record<string, number>, n: number): string[] {
+  return Object.entries(breakdown)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, n)
+    .map(([k]) => k);
+}
+
+export async function stepComputeFairValue(state: PipelineState): Promise<void> {
+  const facts = state.facts ?? [];
+
+  // Current price and currency from facts
+  const currentPrice =
+    latestNumFact(facts, "price") ??
+    latestNumFact(facts, "regularMarketPrice") ??
+    null;
+  const currencyFact = facts.find((f) => f.field === "currency")?.value;
+  const currency = typeof currencyFact === "string" ? currencyFact : "USD";
+
+  const netDebt = computeNetDebtFromFacts(facts);
+  const shares =
+    latestNumFact(facts, "shares_outstanding") ??
+    latestNumFact(facts, "sharesOutstanding") ??
+    null;
+
+  // Peer medians from bucket
+  const bucket = state.peerPercentiles?.bucketId
+    ? (() => {
+        const { PEER_BUCKETS } = require("@/lib/research/peer-universe") as typeof import("@/lib/research/peer-universe");
+        return PEER_BUCKETS.find((b) => b.bucketId === state.peerPercentiles!.bucketId) ?? null;
+      })()
+    : null;
+
+  const peerMedians = {
+    ev_sales: bucket?.medians.ev_sales ?? null,
+    ev_gross_profit: bucket?.medians.ev_sales ? (bucket.medians.ev_sales * (1 / Math.max(bucket.medians.gross_margin ?? 0.5, 0.05))) : null,
+    forward_pe: null as number | null,
+    revenue_growth_yoy: bucket?.medians.revenue_growth_yoy ?? null,
+    gross_margin: bucket?.medians.gross_margin ?? null,
+    operating_margin: bucket?.medians.operating_margin ?? null,
+  };
+
+  // Map reverse-DCF to FairValueReverseDcfCheck format
+  const rdcfInput: FairValueReverseDcfCheck | null = state.reverseDcf
+    ? {
+        implied_fcf_cagr: state.reverseDcf.impliedGrowthRate ?? null,
+        terminal_growth: 0.03,
+        horizon_years: state.reverseDcf.inputs?.years ?? 10,
+        classification:
+          state.reverseDcf.classification === "cheap" ? "conservative" :
+          state.reverseDcf.classification === "fair"  ? "fair" :
+          state.reverseDcf.classification === "ambitious" ? "ambitious" :
+          state.reverseDcf.classification === "speculative" ? "extreme" :
+          null,
+      }
+    : null;
+
+  const result = computeFairValue({
+    ticker: state.ticker,
+    currency,
+    currentPrice,
+    asof: state.runDate,
+    keyMetrics: state.keyMetrics ?? {},
+    businessModel: (state.businessModelType as import("@/lib/research/business-model").BusinessModelType) ?? "Other",
+    peerMedians,
+    reverseDcf: rdcfInput,
+    netDebt,
+    sharesOutstanding: shares,
+  });
+
+  state.fairValue = result;
+
+  logRun(
+    state.runId,
+    "info",
+    `[fair_value] point=${result.point_estimate?.toFixed(2) ?? "n/a"} class=${result.classification ?? "n/a"} conf=${result.confidence}`,
+  );
+}
+
+// -----------------------------------------------------------
+// Step 7b: generateVerdict (LLM + deterministic)
+// -----------------------------------------------------------
+export async function stepGenerateVerdict(state: PipelineState): Promise<void> {
+  const verdictDet = buildVerdict({
+    gate: state.gate!,
+    category: state.category!,
+    confidence: state.confidence!,
+    scoreTotal: state.scoreTotal!,
+    hardBlockers: state.hardBlockers ?? [],
+    scoreBreakdown: state.scoreBreakdown! as Record<import("@/lib/scoring/weights").BlockKey, number>,
+    weights: BLOCK_WEIGHTS,
+    fairValueClassification: state.fairValue?.classification ?? null,
+    upsidePct: state.fairValue?.upside_pct ?? null,
+  });
+
+  const topStrengths = pickTopBlocks(state.scoreBreakdown ?? {}, 2);
+  const topConcerns = [...(state.hardBlockers ?? []), ...(state.redFlags ?? [])].slice(0, 3);
+
+  let detail = `${verdictDet.label}. Siehe Block-Detail.`;
+
+  try {
+    const { data } = await chatJSON<{ detail: string }>({
+      runId: state.runId,
+      step: "verdict_detail",
+      model: state.modelSummary,
+      system: VERDICT_DETAIL_SYSTEM,
+      user: VERDICT_DETAIL_USER({
+        ticker: state.ticker,
+        label: verdictDet.label,
+        reasonCode: verdictDet.reasonCode,
+        weakestBlock: verdictDet.weakestBlock,
+        topStrengths,
+        topConcerns,
+      }),
+      temperature: 0.3,
+      artifactsDir: state.rawDir,
+    });
+    detail = sanitizeVerdictDetail(data.detail, verdictDet.label);
+  } catch {
+    logRun(state.runId, "warn", "[verdict] LLM detail failed, using deterministic fallback");
+  }
+
+  state.verdict = { ...verdictDet, detail };
+  logRun(state.runId, "info", `[verdict] label="${verdictDet.label}" code=${verdictDet.reasonCode}`);
+}
+
+// -----------------------------------------------------------
+// Step 7c: computePeerPercentiles (deterministic, no LLM)
 // -----------------------------------------------------------
 export async function stepComputePeerPercentiles(state: PipelineState): Promise<void> {
   if (!state.keyMetrics || !state.businessModelType) return;
@@ -649,6 +807,19 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
       ? {
           implied_growth_rate: state.reverseDcf.impliedGrowthRate ?? null,
           classification: state.reverseDcf.classification ?? "unknown",
+        }
+      : null,
+
+    // Phase F: Fair Value
+    fair_value: state.fairValue ?? null,
+
+    // Phase F: Verdict
+    verdict: state.verdict
+      ? {
+          label: state.verdict.label,
+          reason_code: state.verdict.reasonCode,
+          weakest_block: state.verdict.weakestBlock ?? null,
+          detail: state.verdict.detail,
         }
       : null,
   });

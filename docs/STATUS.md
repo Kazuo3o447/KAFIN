@@ -4,6 +4,55 @@
 
 ---
 
+## Aktueller Stand — 2026-05-22 (Update 10)
+
+**Phase:** F — Fair-Value-Engine, Verdict-Generator, Decision-First Audit-Dashboard, XLSX-Export-Erweiterung.
+
+### Vorhanden (zusätzlich zu Update 9)
+
+#### F.1 — Deterministischer Fair-Value-Engine
+- **`src/lib/research/fair-value.ts`** (NEU): Multi-Methoden Fair-Value-Engine. 3 Methoden: EV/Sales, EV/Gross-Profit, Forward P/E. Gewichteter Median mit Konfidenz-Gewichten. Klassifizierung: `deep_value | value | fair | premium | overvalued`. Skala ±50 % (off-scale bei Überschreitung). Währungs-Mismatch → Confidence forced `low`. Peer-Bucket-Integration.
+- **`tests/unit/fair-value.test.ts`** (NEU): 15 Tests — alle grün.
+
+#### F.2 — Verdict-Generator
+- **`src/lib/research/verdict.ts`** (NEU): Deterministischer Verdict-Label (Hard-Blocker > Gate-Red > Gate-Yellow > Gate-Green-Kombinationen). `buildVerdict()`, `sanitizeVerdictDetail()`, `blockerToBlock()`. FORBIDDEN_WORDS-Filter (kein Buy/Sell/Hold).
+- **`src/lib/llm/prompts.ts`** (GEÄNDERT): `VERDICT_DETAIL_SYSTEM` + `VERDICT_DETAIL_USER` — 25-Wort-Limit, keine Kurs-Empfehlung.
+- **`tests/unit/verdict.test.ts`** (NEU): 20 Tests — alle grün.
+
+#### F.3 — Schema & Pipeline-Integration
+- **`src/lib/schemas/report.ts`** (GEÄNDERT): `ReportSchema` um `fair_value` und `verdict` erweitert — beide `nullable().default(null)` (abwärtskompatibel).
+- **`src/lib/orchestrator/steps.ts`** (GEÄNDERT): `stepComputeFairValue()`, `stepGenerateVerdict()` hinzugefügt. `stepPersist()` schreibt neue Felder.
+- **`src/lib/orchestrator/pipeline.ts`** (GEÄNDERT): `POST_STEPS`-Reihenfolge: score → peer (75 %) → fair_value (78 %) → summary (86 %) → redteam (92 %) → verdict (96 %) → persist (100 %).
+- **`tests/unit/schema-backcompat-fairvalue.test.ts`** (NEU): 3 Tests — alte Reports ohne `fair_value`/`verdict` parsen ohne Fehler.
+
+#### F.4 — Decision-First Audit-Dashboard
+- **`src/components/FairValuePanel.tsx`** (NEU): 3-Zonen-Skalierungsbalken, Fair-Value-Marker, Methoden-Tabelle, Reverse-DCF-Annotation.
+- **`src/components/DecisionHero.tsx`** (NEU): Verdict-Hero links, FairValuePanel rechts, 2-Spalten-Grid auf md+.
+- **`src/components/CollapsibleSection.tsx`** (NEU): Expand/Collapse-Sektionen, Print-Mode immer geöffnet.
+- **`src/components/BlockOverviewBars.tsx`** (NEU): Horizontale Block-Bars mit Auto-Expand-Logik (Hard-Blocker-Block → schwächster Block → null). Exportiert `findAutoExpandBlock()`.
+- **`src/components/ScoreKpiStrip.tsx`** (NEU): Mini-Gauge + 8 KPI-Tiles, Modell-spezifische Layouts (`KPI_LAYOUTS`), Peer-Perzentil-Pfeile. Exportiert `KPI_LAYOUTS`, `DEFAULT_KPI_LAYOUT`.
+- **`src/app/reports/[id]/page.tsx`** (VOLLSTÄNDIG ÜBERARBEITET): Decision-First-Layout. Container `max-w-5xl`. Alte Komponenten (Gauge, RadarChart, KpiCard, AuditTabsClient) entfernt.
+- **`src/styles/globals.css`** (GEÄNDERT): Print-Mode-Regeln — Sidebar/Buttons versteckt, collapsible-content always-open, break-inside-avoid.
+- **Entfernt:** `src/components/AuditTabs.tsx`, `src/components/RadarChart.tsx`, `src/components/KpiCard.tsx`, `src/app/reports/[id]/AuditTabsClient.tsx`.
+- **`tests/unit/kpi-layout.test.ts`** (NEU): 6 Tests — SaaS enthält NRR, Semiconductor enthält Net Debt/EBITDA.
+- **`tests/unit/block-auto-expand.test.ts`** (NEU): 5 Tests — Auto-Expand-Logik.
+
+#### F.5 — XLSX-Export-Erweiterung
+- **`src/lib/export/xlsx.ts`** (GEÄNDERT): Neue Sheets „Fair Value" (Methoden-Rows, Reverse-DCF, Summary) und „Verdict" (Label, Detail) — nur wenn Felder im Report vorhanden.
+- **`tests/unit/export-xlsx.test.ts`** (NEU): 4 Tests — Fair-Value-Sheet bei FV-Daten, Verdict-Sheet bei Verdict-Daten, keine Sheets ohne Daten.
+
+### Behobene Bugs
+| Bug | Ursache | Fix |
+|---|---|---|
+| page.tsx doppelter Code nach Rewrite | Partielle Replace-Operation lies alte Funktion als Anhang | PS .NET File-API zum präzisen Truncate |
+| Typecheck-Fehler in xlsx.ts | Falsche Feldnamen (`method`, `estimate`, `implied_growth_rate`) statt Schema-Namen (`name`, `value`, `implied_fcf_cagr`) | Korrigiert |
+
+### Verifiziert (Update 10)
+- `npm run typecheck` ✅ (exit 0)
+- `npx vitest run` ✅ 106/106 Tests in 14 Test-Dateien
+
+---
+
 ## Aktueller Stand — 2026-05-22 (Update 9)
 
 **Phase:** 5 — OpenRouter-Provider, ISIN-Integration, dichteres Audit-Dashboard, Export-Refactor.

@@ -187,6 +187,44 @@ export const ReportSchema = z.object({
     implied_growth_rate: z.number().nullable().default(null),
     classification: z.enum(["cheap", "fair", "ambitious", "speculative", "unknown"]).default("unknown"),
   }).nullable().default(null),
+
+  // Phase F: Fair Value
+  fair_value: z.object({
+    currency: z.string().default("USD"),
+    current_price: z.number().nullable().default(null),
+    point_estimate: z.number().nullable().default(null),
+    range_low: z.number().nullable().default(null),
+    range_high: z.number().nullable().default(null),
+    upside_pct: z.number().nullable().default(null),
+    classification: z.enum(["deep_value", "value", "fair", "premium", "overvalued"]).nullable().default(null),
+    methods: z.array(z.object({
+      name: z.enum(["ev_sales", "ev_gross_profit", "forward_pe"]),
+      applicable: z.boolean(),
+      value: z.number().nullable(),
+      weight: z.number().min(0).max(1),
+      confidence: ConfidenceSchema,
+      rationale: z.string().max(120).default(""),
+      inputs: z.record(z.string(), z.number().nullable()).default({}),
+    })).default([]),
+    reverse_dcf: z.object({
+      implied_fcf_cagr: z.number().nullable().default(null),
+      terminal_growth: z.number().default(0.03),
+      horizon_years: z.number().int().positive().default(10),
+      classification: z.enum(["conservative", "fair", "ambitious", "extreme"]).nullable().default(null),
+    }).nullable().default(null),
+    confidence: ConfidenceSchema,
+    applicable_method_count: z.number().int().min(0).default(0),
+    rationale_short: z.string().max(120).default(""),
+    asof: z.string().default(""),
+  }).nullable().default(null),
+
+  // Phase F: Verdict
+  verdict: z.object({
+    label: z.string().max(80),
+    reason_code: z.string(),
+    weakest_block: BlockKeySchema.nullable().default(null),
+    detail: z.string().max(200).default(""),
+  }).nullable().default(null),
 });
 
 export type Report = z.infer<typeof ReportSchema>;

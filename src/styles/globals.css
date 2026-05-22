@@ -205,13 +205,18 @@ body {
 }
 
 /* ==========================================================================
-   Print / PDF (Puppeteer)
+   Print / PDF (Puppeteer) + Print-Mode polish (Phase F.4)
    ========================================================================== */
 @media print {
   header { display: none !important; }
   body { background: #0b1220 !important; }
+  .app-sidebar, button[aria-label="copy"], .ti-chevron-down, .ti-chevron-right { display: none !important; }
+  .collapsible-content { display: block !important; height: auto !important; }
+  .fair-value-scale { break-inside: avoid; }
+  section, .glass-card { break-inside: avoid; }
 }
 .print-mode header { display: none !important; }
+.print-mode .collapsible-content { display: block !important; }
 
 /* ==========================================================================
    App Shell · Sidebar (links)

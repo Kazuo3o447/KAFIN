@@ -93,6 +93,64 @@ export async function renderReportXlsx(report: Report): Promise<Buffer> {
   );
   src.getRow(1).font = { bold: true };
 
+  // ---- Fair Value (Phase F.5) ----
+  if (report.fair_value) {
+    const fv = report.fair_value;
+    const fvSheet = wb.addWorksheet("Fair Value");
+    fvSheet.columns = [
+      { header: "Methode / Feld", key: "k", width: 32 },
+      { header: "Wert", key: "v", width: 20 },
+      { header: "Gewicht", key: "w", width: 12 },
+      { header: "Anmerkung", key: "note", width: 40 },
+    ];
+    fvSheet.getRow(1).font = { bold: true };
+
+    // Method rows
+    fv.methods.forEach((m) => {
+      fvSheet.addRow({
+        k: m.name,
+        v: m.value != null ? m.value.toFixed(2) : "—",
+        w: m.weight != null ? m.weight.toFixed(3) : "—",
+        note: m.applicable ? "" : "nicht anwendbar",
+      });
+    });
+
+    // Reverse-DCF row
+    if (fv.reverse_dcf) {
+      fvSheet.addRow({
+        k: "Reverse DCF (impl. FCF-CAGR)",
+        v: fv.reverse_dcf.implied_fcf_cagr != null ? (fv.reverse_dcf.implied_fcf_cagr * 100).toFixed(1) + "%" : "—",
+        w: "",
+        note: fv.reverse_dcf.classification ?? "",
+      });
+    }
+
+    // Summary rows
+    fvSheet.addRow({});
+    fvSheet.addRow({ k: "Aktueller Kurs", v: fv.current_price ?? "—" });
+    fvSheet.addRow({ k: "Fair-Value-Schätzung", v: fv.point_estimate ?? "—" });
+    fvSheet.addRow({ k: "Bereich", v: fv.range_low != null && fv.range_high != null ? `${fv.range_low.toFixed(2)} – ${fv.range_high.toFixed(2)}` : "—" });
+    fvSheet.addRow({ k: "Upside/Downside", v: fv.upside_pct != null ? (fv.upside_pct * 100).toFixed(1) + "%" : "—" });
+    fvSheet.addRow({ k: "Klassifizierung", v: fv.classification ?? "—" });
+    fvSheet.addRow({ k: "Konfidenz", v: fv.confidence });
+    fvSheet.addRow({ k: "Anzahl Methoden", v: fv.applicable_method_count });
+    fvSheet.addRow({ k: "Rationale", v: fv.rationale_short });
+  }
+
+  // ---- Verdict (Phase F.5) ----
+  if (report.verdict) {
+    const vd = wb.addWorksheet("Verdict");
+    vd.columns = [
+      { header: "Feld", key: "k", width: 24 },
+      { header: "Wert", key: "v", width: 80 },
+    ];
+    vd.getRow(1).font = { bold: true };
+    vd.addRow({ k: "Label", v: report.verdict.label });
+    vd.addRow({ k: "Reason Code", v: report.verdict.reason_code });
+    vd.addRow({ k: "Schwächster Block", v: report.verdict.weakest_block ?? "—" });
+    vd.addRow({ k: "Detail", v: report.verdict.detail });
+  }
+
   const ab = await wb.xlsx.writeBuffer();
   return Buffer.from(ab as ArrayBuffer);
 }
