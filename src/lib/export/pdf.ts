@@ -22,7 +22,7 @@ export async function renderReportPdf(opts: {
     const pdf = await page.pdf({
       format: "A4",
       printBackground: true,
-      margin: { top: "16mm", bottom: "16mm", left: "12mm", right: "12mm" },
+      margin: { top: "10mm", bottom: "10mm", left: "6mm", right: "6mm" },
     });
     return Buffer.from(pdf);
   } finally {

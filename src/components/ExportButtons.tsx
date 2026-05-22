@@ -1,6 +1,6 @@
 "use client";
 /**
- * ExportButtons – lädt PDF/XLSX/PPTX über die API.
+ * ExportButtons – lädt Exportformate über ein Dropdown-Menü.
  */
 import { useState } from "react";
 import { showToast } from "@/components/Toast";
@@ -12,12 +12,13 @@ interface Props {
 
 const FORMATS = [
   { fmt: "xlsx", label: "Excel", icon: "📊" },
-  { fmt: "pptx", label: "PowerPoint", icon: "📑" },
+  { fmt: "json", label: "JSON", icon: "🧾" },
   { fmt: "pdf", label: "PDF", icon: "📄" },
 ] as const;
 
 export function ExportButtons({ reportId, ticker }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string>("");
 
   async function download(fmt: (typeof FORMATS)[number]["fmt"]) {
     setBusy(fmt);
@@ -46,18 +47,26 @@ export function ExportButtons({ reportId, ticker }: Props) {
 
   return (
     <div className="flex items-center gap-2">
-      {FORMATS.map((f) => (
-        <button
-          key={f.fmt}
-          onClick={() => download(f.fmt)}
-          disabled={busy !== null}
-          className="px-3 py-1.5 text-xs border border-secondary-700 hover:border-accent-500 disabled:opacity-50 rounded-md transition-colors"
-          title={`Export als ${f.label}`}
-        >
-          <span className="mr-1">{f.icon}</span>
-          {busy === f.fmt ? "…" : f.label}
-        </button>
-      ))}
+      <label className="text-xs text-secondary-500" htmlFor={`export-${reportId}`}>Export</label>
+      <select
+        id={`export-${reportId}`}
+        value={selected}
+        disabled={busy !== null}
+        onChange={(e) => {
+          const fmt = e.target.value as (typeof FORMATS)[number]["fmt"] | "";
+          setSelected("");
+          if (!fmt) return;
+          void download(fmt);
+        }}
+        className="px-3 py-1.5 text-xs border border-secondary-700 bg-secondary-900 hover:border-accent-500 disabled:opacity-50 rounded-md transition-colors"
+      >
+        <option value="">Format wählen…</option>
+        {FORMATS.map((f) => (
+          <option key={f.fmt} value={f.fmt}>
+            {busy === f.fmt ? "…" : `${f.icon} ${f.label}`}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }

@@ -41,6 +41,7 @@ berechnet. Uebernimm sie, wenn vorhanden; rechne diese Werte nicht selbst.
 Extrahiere ein JSON mit folgender Struktur (key_metrics, identity, sources):
 {
   "company_name": string|null,
+  "isin": string|null,
   "exchange": string|null,
   "sector": string|null,
   "industry": string|null,

@@ -13,7 +13,7 @@ const LS = {
   ollamaBaseUrl: "kafin.ollamaBaseUrl",
 };
 
-type Provider = "ollama" | "deepseek";
+type Provider = "ollama" | "deepseek" | "openrouter";
 
 async function apiGet(key: string): Promise<unknown> {
   const res = await fetch(`/api/settings?key=${encodeURIComponent(key)}`);
@@ -39,6 +39,8 @@ export default function SettingsPage() {
   const [provider, setProvider] = useState<Provider>("ollama");
   const [deepseekKey, setDeepseekKey] = useState("");
   const [deepseekModel, setDeepseekModel] = useState("deepseek-chat");
+  const [openrouterKey, setOpenrouterKey] = useState("");
+  const [openrouterModel, setOpenrouterModel] = useState("openrouter/free");
   const [showKey, setShowKey] = useState(false);
 
   const [loaded, setLoaded] = useState(false);
@@ -56,10 +58,14 @@ export default function SettingsPage() {
       apiGet("llm_provider"),
       apiGet("deepseek_api_key"),
       apiGet("deepseek_model"),
-    ]).then(([prov, key, mdl]) => {
-      if (prov === "deepseek" || prov === "ollama") setProvider(prov);
+      apiGet("openrouter_api_key"),
+      apiGet("openrouter_model"),
+    ]).then(([prov, key, mdl, orKey, orMdl]) => {
+      if (prov === "deepseek" || prov === "ollama" || prov === "openrouter") setProvider(prov);
       if (typeof key === "string" && key) setDeepseekKey(key);
       if (typeof mdl === "string" && mdl) setDeepseekModel(mdl);
+      if (typeof orKey === "string" && orKey) setOpenrouterKey(orKey);
+      if (typeof orMdl === "string" && orMdl) setOpenrouterModel(orMdl);
       setLoaded(true);
     });
   }, []);
@@ -78,6 +84,10 @@ export default function SettingsPage() {
         await apiSet("deepseek_api_key", deepseekKey.trim());
         await apiSet("deepseek_model", deepseekModel.trim() || "deepseek-chat");
       }
+      if (provider === "openrouter") {
+        await apiSet("openrouter_api_key", openrouterKey.trim());
+        await apiSet("openrouter_model", openrouterModel.trim() || "openrouter/free");
+      }
 
       showToast("Einstellungen gespeichert", "success");
     } catch {
@@ -93,6 +103,10 @@ export default function SettingsPage() {
     if (provider === "deepseek") {
       await apiSet("deepseek_api_key", deepseekKey.trim());
       await apiSet("deepseek_model", deepseekModel.trim() || "deepseek-chat");
+    }
+    if (provider === "openrouter") {
+      await apiSet("openrouter_api_key", openrouterKey.trim());
+      await apiSet("openrouter_model", openrouterModel.trim() || "openrouter/free");
     }
     setTesting(true);
     setTestResult(null);
@@ -143,6 +157,16 @@ export default function SettingsPage() {
             }`}
           >
             DeepSeek API
+          </button>
+          <button
+            onClick={() => setProvider("openrouter")}
+            className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+              provider === "openrouter"
+                ? "bg-violet-600 text-white shadow"
+                : "text-secondary-400 hover:text-secondary-200"
+            }`}
+          >
+            OpenRouter
           </button>
         </div>
 
@@ -205,6 +229,56 @@ export default function SettingsPage() {
               <p className="text-xs text-secondary-500 mt-1">
                 Empfohlen: <code className="font-mono">deepseek-chat</code> oder{" "}
                 <code className="font-mono">deepseek-reasoner</code>.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* OpenRouter-spezifisch */}
+        {provider === "openrouter" && (
+          <div className="space-y-4 pt-1">
+            <div>
+              <label className="text-xs uppercase tracking-wide text-secondary-500">API Key</label>
+              <div className="mt-1 relative">
+                <input
+                  type={showKey ? "text" : "password"}
+                  value={openrouterKey}
+                  onChange={(e) => setOpenrouterKey(e.target.value)}
+                  placeholder="sk-or-v1-..."
+                  className="w-full bg-secondary-900 border border-secondary-700 rounded-md px-3 py-2 text-sm font-mono focus:border-violet-500 outline-none pr-20"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowKey((v) => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-secondary-400 hover:text-secondary-200"
+                >
+                  {showKey ? "Verbergen" : "Anzeigen"}
+                </button>
+              </div>
+              <p className="text-xs text-secondary-500 mt-1">
+                Wird verschlüsselt-frei in der lokalen SQLite-DB gespeichert.
+              </p>
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-wide text-secondary-500">Modell</label>
+              <input
+                value={openrouterModel}
+                onChange={(e) => setOpenrouterModel(e.target.value)}
+                placeholder="openrouter/free"
+                className="mt-1 w-full bg-secondary-900 border border-secondary-700 rounded-md px-3 py-2 text-sm font-mono focus:border-violet-500 outline-none"
+              />
+              <p className="text-xs text-secondary-500 mt-1">
+                Für die Testphase: <code className="font-mono">openrouter/free</code>.{" "}
+                Vollständige Liste auf{" "}
+                <a
+                  href="https://openrouter.ai/models"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline hover:text-secondary-200"
+                >
+                  openrouter.ai/models
+                </a>
+                .
               </p>
             </div>
           </div>

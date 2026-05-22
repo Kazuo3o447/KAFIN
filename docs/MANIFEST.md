@@ -78,14 +78,19 @@
 
 ---
 
-## 5. LLM-Regeln (Ollama / DeepSeek)
+## 5. LLM-Regeln (Ollama / DeepSeek / OpenRouter)
 
-- **Zwei Provider** wählbar über Einstellungsseite: `ollama` (lokal) und `deepseek` (Cloud-API, OpenAI-kompatibel).
-- Provider-Konfiguration in SQLite `settings`-Tabelle (Schlüssel: `llm_provider`, `deepseek_api_key`, `deepseek_model`). Lese-Cache 10 s via `src/lib/llm/config.ts`.
-- **Ollama:** Modell-Liste dynamisch via `GET /api/tags`. Default = erstes geeignetes Text-LLM (Vision/Embedding-Modelle werden gefiltert). Modellauswahl **nur in den Einstellungen**, nicht im Run-Dialog.
+- **Drei Provider** wählbar über Einstellungsseite: `ollama` (lokal), `deepseek` (Cloud-API, OpenAI-kompatibel), `openrouter` (Cloud-API-Gateway, OpenAI-kompatibel).
+- Provider-Konfiguration in SQLite `settings`-Tabelle. Schlüssel:
+  - `llm_provider` — `"ollama"` | `"deepseek"` | `"openrouter"`
+  - `deepseek_api_key`, `deepseek_model` (Default `deepseek-chat`)
+  - `openrouter_api_key`, `openrouter_model` (Default `openrouter/free`)
+- Lese-Cache 10 s via `src/lib/llm/config.ts`. Settings-Änderungen invalidieren Cache sofort.
+- **Ollama:** Modell-Liste dynamisch via `GET /api/tags`. Default = erstes geeignetes Text-LLM. Modellauswahl **nur in den Einstellungen**, nicht im Run-Dialog.
 - **Ollama Streaming:** Alle Chat-Calls mit `stream: true` — umgeht den undici `headersTimeout` von 300 s bei langsamen/großen Modellen.
-- **DeepSeek:** Modell `deepseek_model` (Default `deepseek-chat`). API-Key aus Settings. `response_format: { type: "json_object" }`.
-- **Jeder** LLM-Call schreibt nach `data/logs/audit.jsonl` (`run_id`, `step`, `model`, `prompt_hash`, `prompt_path`, `response_path`, `ms`, `ok`, `error`).
+- **DeepSeek:** `response_format: { type: "json_object" }`. API gegen `https://api.deepseek.com`.
+- **OpenRouter:** `response_format: { type: "json_object" }`. API gegen `https://openrouter.ai/api/v1`. Retry/Backoff bei transienten Fehlern, `AbortSignal.timeout` als harter Cutoff. Fallback-Chain: konfiguriertes Modell → `openrouter/free` → `google/gemma-4-31b-it:free` → `openrouter/auto`. Section-Concurrency auf 1 begrenzt (Free-Tier-Stabilität).
+- **Jeder** LLM-Call schreibt nach `data/logs/audit.jsonl` (`run_id`, `step`, `model`, `prompt_hash`, `prompt_path`, `response_path`, `ms`, `ok`, `error`). Bei OpenRouter wird das tatsächlich verwendete Modell (nach Fallback) geloggt.
 - Temperature default `0.1` für Extraktion, `0.2` für Scoring, `0.4` für Summaries.
 - Schema-Validierung via Zod. Bei Fehlschlag: 1× Repair-Retry, dann Run als `failed` — kein Silent-Fallback.
 
@@ -114,10 +119,10 @@ Gate-Logik & Blocker exakt nach `research.md` §18–§20. Hard-Blocker setzen G
 
 In dieser Reihenfolge:
 1. Ticker-Eingabe → Research-Run (Daten-Fetch → LLM-Extraktion → Scoring → Speicherung)
-2. Audit-Dashboard (Gauges, Radar, KPI-Cards, Score-Breakdown, Source-Liste)
+2. Audit-Dashboard (Gauges, Radar, 16 KPI-Cards, ISIN, Score-Breakdown, Source-Liste, dichte Darstellung)
 3. Watchlist + Reports-Liste + Versionsvergleich (Diff zweier Runs)
 4. Live-Log-Panel (Server-Sent Events, Style aus Pilot)
-5. Export: PDF (puppeteer), XLSX (exceljs), PPTX (pptxgenjs)
+5. Export: PDF (puppeteer), XLSX (exceljs), Audit-JSON (vollständiger Audit-Kontext) — alle drei in einem Dropdown. PPTX-Route technisch vorhanden, im UI nicht exponiert.
 
 **Explizit nicht im MVP:** Red-Team, RSS-Sentiment-Pipeline, Paper-Trading-Gate, Entra-Auth, Multi-User, CRM.
 

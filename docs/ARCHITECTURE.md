@@ -66,17 +66,21 @@ kafin/
 │   │   ├── watchlist/page.tsx
 │   │   ├── settings/page.tsx
 │   │   ├── logs/page.tsx
-│   │   └── api/
-│   │       ├── runs/route.ts            # POST start, GET list
-│   │       ├── runs/[id]/route.ts       # GET status/result, DELETE cancel
-│   │       ├── runs/[id]/stream/route.ts# SSE: live log + progress
-│   │       ├── reports/route.ts
-│   │       ├── reports/[id]/route.ts
-│   │       ├── reports/[id]/export/route.ts  # ?format=pdf|xlsx|pptx
-│   │       ├── watchlist/route.ts
-│   │       ├── ollama/models/route.ts   # proxy /api/tags
-│   │       ├── settings/route.ts
-│   │       └── health/route.ts
+│   │   ├── api/
+│   │   │   ├── runs/route.ts            # POST start, GET list
+│   │   │   ├── runs/[id]/route.ts       # GET status/result, DELETE cancel
+│   │   │   ├── runs/[id]/stream/route.ts# SSE: live log + progress
+│   │   │   ├── reports/route.ts
+│   │   │   ├── reports/[id]/route.ts
+│   │   │   ├── reports/[id]/export/pdf/route.ts
+│   │   │   ├── reports/[id]/export/xlsx/route.ts
+│   │   │   ├── reports/[id]/export/json/route.ts  # vollst. Audit-JSON
+│   │   │   ├── reports/[id]/export/pptx/route.ts  # vorhanden, nicht im UI
+│   │   │   ├── watchlist/route.ts
+│   │   │   ├── ollama/models/route.ts   # proxy /api/tags
+│   │   │   ├── settings/route.ts
+│   │   │   ├── settings/test-llm/route.ts  # Provider-Konnektivitätstest
+│   │   │   └── health/route.ts
 │   ├── components/
 │   │   ├── layout/Header.tsx
 │   │   ├── layout/Sidebar.tsx
@@ -106,8 +110,11 @@ kafin/
 │   │   │   ├── alphavantage.ts
 │   │   │   └── rss.ts
 │   │   ├── llm/
-│   │   │   ├── ollama.ts             # client wrapper + audit
-│   │   │   ├── prompts/              # *.md templates (research.md §22 etc.)
+│   │   │   ├── ollama.ts             # chatJSON() Router: openrouter → deepseek → ollama
+│   │   │   ├── openrouter.ts         # OpenRouter-Client (Retry/Backoff/Fallback)
+│   │   │   ├── deepseek.ts           # DeepSeek-API-Client
+│   │   │   ├── config.ts             # Provider-Config aus DB (10s-Cache)
+│   │   │   ├── prompts.ts            # LLM-Prompt-Templates
 │   │   │   └── repair.ts             # JSON-Repair pass
 │   │   ├── scoring/
 │   │   │   ├── weights.ts            # Block-Gewichte (research.md §9)
@@ -180,9 +187,10 @@ runPipeline(runId, ticker)  — alles in einem try/catch; Fehler → SSE error-E
    ├─ Phase 2 (PARALLEL — größter Laufzeit-Gewinn):
    │   ├─ 4a. stepExtractFacts()   ── LLM: key_metrics + identity aus globalem Context
    │   │       model: modelExtract, temp: 0.1, context: max 18.000 Zeichen
-   │   └─ 4b. stepAnswerSections() ── LLM: Blöcke A–G, concurrency=7
+   │   └─ 4b. stepAnswerSections() ── LLM: Blöcke A–G
    │           model: modelScoring, temp: 0.2, context: max 12.000 Zeichen/Block
    │           rationale: max 10 Wörter/Indikator
+   │           concurrency: deepseek=7, ollama/openrouter=1
    │     emit("progress", 70%)
    │
    └─ Phase 3 (sequentiell):
@@ -196,15 +204,23 @@ runPipeline(runId, ticker)  — alles in einem try/catch; Fehler → SSE error-E
              emit("done", 100%, reportId)
 ```
 
-### LLM-Routing (seit Update 8)
+### LLM-Routing (seit Update 8/9)
 
 `chatJSON()` in `ollama.ts` liest via `getLLMConfig()` den aktiven Provider aus der DB:
 
 ```
 chatJSON(opts)
    │
-   ├─ getLLMConfig().provider === "deepseek"
-   │     └─ chatJSONDeepSeek(opts, apiKey, model)
+   ├─ getLLMConfig().provider === "openrouter"
+   │     └─ chatJSONOpenRouter(opts, apiKey, model)   [openrouter.ts]
+   │         POST https://openrouter.ai/api/v1/chat/completions
+   │         response_format: { type: "json_object" }
+   │         Retry/Backoff bei HTTP 5xx / Netzwerk-Fehler
+   │         AbortSignal.timeout als harter Cutoff
+   │         Fallback-Chain: konfiguriert → openrouter/free → gemma-free → auto
+   │
+   ├─ provider === "deepseek"
+   │     └─ chatJSONDeepSeek(opts, apiKey, model)      [deepseek.ts]
    │         POST https://api.deepseek.com/chat/completions
    │         response_format: { type: "json_object" }
    │
@@ -224,7 +240,9 @@ ensureRunBus(runId)  — globalThis.__kafinRunBus (Map, geteilt über alle Route
    └─ isDone(runId)                 ── stream sofort schließen wenn bereits fertig
 ```
 
-> **Wichtig:** `bus` hängt an `globalThis.__kafinRunBus` — notwendig weil Next.js-Dev-Mode jede Route-Datei in einer eigenen Modul-Instanz evaluiert. Ohne globalThis würden POST `/api/runs` und GET `/api/runs/[id]/stream` verschiedene Map-Instanzen sehen → leerer Buffer.
+Max-Listener auf `0` (unbegrenzt) gesetzt, verhindert `MaxListenersExceededWarning` bei vielen Reconnects. SSE-Cleanup läuft in allen Exit-Pfaden (`done`/`error`/`cancel`/`abort`).
+
+> **Wichtig:** `bus` hängt an `globalThis.__kafinRunBus` — notwendig weil Next.js-Dev-Mode jede Route-Datei in einer eigenen Modul-Instanz evaluiert.
 
 ---
 
@@ -301,12 +319,12 @@ runs(status, started_at desc)
 |---|---|---|
 | `/` Dashboard | Letzte Reports, Watchlist-Snapshot, KPI-Tiles (Anzahl Reports, Ø Score, Gate-Verteilung, Top 5 Score, Letzte Fehler) | "Übersicht"-Kacheln |
 | `/run/[ticker]` (Detail) | Live-Lauf: Step-Progress, Log-Panel, abbrechbar | "Audit läuft"-View |
-| `/reports` | Tabelle + Filter (Ticker, Datum, Gate, Kategorie, Score-Range) | Tab "Berichte" |
-| `/reports/[id]` (**Audit-Dashboard**) | siehe §6 | Tab "Auswertung" |
-| `/reports/[id]/compare?vs=[id2]` | Diff zweier Runs (Score-Δ, Metrik-Δ) | neu |
-| `/watchlist` | Ticker-Verwaltung, Quick-Run-Button | – |
-| `/settings` | Ollama-Modelle, API-Keys, Defaults, Daten-Pfade | "Einstellungen" + Passwort entfällt |
-| `/logs` | `audit.jsonl` Live-Tail + Filter | "Log"-Tab |
+| `/reports` | Tabelle + Filter (Ticker, Datum, Gate, Kategorie, Score-Range), „vs. Vorgänger“-Button | Tab „Berichte“ |
+| `/reports/[id]` (**Audit-Dashboard**) | siehe §6 | Tab „Auswertung“ |
+| `/reports/compare/[a]/[b]` | Diff zweier Runs (Score-Δ, Block-Δ, Metrik-Δ, Listen-Δ, These vorher/nachher) | neu |
+| `/watchlist` | Ticker-Verwaltung, Quick-Run-Button, Notes editierbar, Unpin mit Confirm | – |
+| `/settings` | Provider-Toggle (Ollama / DeepSeek / OpenRouter), API-Keys, Modell-Felder, Verbindung testen | „Einstellungen“ |
+| `/logs` | `runs.jsonl` Pipeline-Logs + `audit.jsonl` LLM-Audit-Tabelle, beide live mit `force-dynamic` | „Log“-Tab |
 
 ---
 
@@ -370,12 +388,12 @@ Farbsystem (aus Pilot übernommen): `score-strip-green/yellow/red` Class an `Gla
 
 ---
 
-## 8. Ollama-Integration
+## 8. LLM-Integration
 
-- **Models-Endpoint:** `GET /api/ollama/models` ruft `GET http://ollama:11434/api/tags`, cached 30 s.
-- **Inferenz:** `POST /api/chat` mit `{ model, messages, format:"json", options:{temperature} }`. Bei großen Prompts `keep_alive: "10m"`.
-- **Per-Step-Override:** Settings speichern Default-Modelle; UI im `/run/[ticker]` erlaubt Override.
-- **Audit:** jeder Call → `audit.append({runId, step, model, promptHash, promptFile, responseFile, ms, ok})`.
+- **Models (Ollama):** `GET /api/ollama/models` ruft `GET http://ollama:11434/api/tags`, cached 30 s.
+- **Modellauswahl:** Ausschließlich über die Einstellungsseite (`/settings`) — kein Override im Run-Dialog.
+- **Audit:** jeder Call → `data/logs/audit.jsonl` (`runId`, `step`, `model`, `promptHash`, `promptPath`, `responsePath`, `ms`, `ok`, `error`). Bei OpenRouter zusätzlich das tatsächlich verwendete Modell nach Fallback.
+- **JSON-Repair:** `lib/llm/repair.ts` — portiert aus Pilot, verwendet Klammer-Stack-Tracker.
 
 ---
 
@@ -386,18 +404,13 @@ NODE_ENV=production
 PORT=3000
 DATA_DIR=/data
 OLLAMA_BASE_URL=http://ollama:11434
-DEFAULT_MODEL_EXTRACT=llama3.1:8b-instruct
-DEFAULT_MODEL_SCORING=llama3.1:8b-instruct
-DEFAULT_MODEL_SUMMARY=llama3.1:8b-instruct
 FMP_API_KEY=
 ALPHA_VANTAGE_API_KEY=
-SEC_USER_AGENT="Kafin Research <you@example.com>"
+EDGAR_USER_AGENT="Kafin Research <you@example.com>"
 LOG_LEVEL=info
 ```
 
-Keine Secrets im Repo. `.env.example` ohne Werte einchecken.
-
----
+Provider-spezifische Keys (OpenRouter, DeepSeek) werden **nicht** per `.env` gesetzt, sondern über die Einstellungsseite in die `settings`-Tabelle geschrieben und per `src/lib/llm/config.ts` mit 10-s-Cache gelesen. Keine Secrets im Repo. `.env.example` ohne Werte einchecken.
 
 ## 10. Docker Compose
 

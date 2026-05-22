@@ -76,7 +76,7 @@ export function ensureRunBus(runId: string): BusEntry {
   let e = bus.get(runId);
   if (!e) {
     const emitter = new EventEmitter();
-    emitter.setMaxListeners(50);
+    emitter.setMaxListeners(0);
     e = { emitter, buffer: [], done: false };
     bus.set(runId, e);
   }

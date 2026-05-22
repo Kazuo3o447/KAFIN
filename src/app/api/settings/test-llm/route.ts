@@ -50,6 +50,45 @@ export async function GET(): Promise<NextResponse> {
     }
   }
 
+  if (cfg.provider === "openrouter") {
+    if (!cfg.openrouterApiKey) {
+      return NextResponse.json({ ok: false, message: "Kein OpenRouter API-Key konfiguriert." });
+    }
+    try {
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${cfg.openrouterApiKey}`,
+          "HTTP-Referer": "https://kafin.local",
+          "X-Title": "Kafin Research",
+        },
+        body: JSON.stringify({
+          model: cfg.openrouterModel || "openrouter/free",
+          messages: [{ role: "user", content: "Hi" }],
+          max_tokens: 1,
+        }),
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (res.ok) {
+        const json = (await res.json()) as { model?: string };
+        return NextResponse.json({
+          ok: true,
+          message: `OpenRouter verbunden · Modell: ${json.model ?? cfg.openrouterModel}`,
+        });
+      }
+      const bodyText = await res.text();
+      let detail = `HTTP ${res.status}`;
+      try {
+        const err = JSON.parse(bodyText) as { error?: { message?: string } };
+        detail = err.error?.message ?? detail;
+      } catch { /* ignore */ }
+      return NextResponse.json({ ok: false, message: detail });
+    } catch (e) {
+      return NextResponse.json({ ok: false, message: (e as Error).message });
+    }
+  }
+
   // Ollama
   const baseUrl = (process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/$/, "");
   try {

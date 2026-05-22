@@ -66,6 +66,7 @@ export interface PipelineState {
   sourceMap?: Map<number, { url: string; title?: string; klass: string }>;
   identity?: {
     company_name: string;
+    isin: string;
     exchange: string;
     sector: string;
     industry: string;
@@ -168,11 +169,42 @@ export async function stepBuildContext(state: PipelineState): Promise<void> {
 // -----------------------------------------------------------
 interface ExtractorOutput {
   company_name: string | null;
+  isin: string | null;
   exchange: string | null;
   sector: string | null;
   industry: string | null;
   key_metrics: Partial<KeyMetrics>;
   facts?: Array<{ field: string; value: unknown; sourceIdx: number }>;
+}
+
+function normalizeIsin(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return /^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(normalized) ? normalized : null;
+}
+
+function extractIsinFromFacts(facts: ProviderFact[] | undefined): string | null {
+  if (!facts || facts.length === 0) return null;
+  const isinPattern = /\b[A-Z]{2}[A-Z0-9]{9}[0-9]\b/g;
+  for (const fact of facts) {
+    if (fact.field.toLowerCase().includes("isin")) {
+      const direct = normalizeIsin(typeof fact.value === "string" ? fact.value : String(fact.value ?? ""));
+      if (direct) return direct;
+    }
+    if (typeof fact.value === "string") {
+      const m = fact.value.toUpperCase().match(isinPattern);
+      if (m?.[0]) return m[0];
+      continue;
+    }
+    try {
+      const serialized = JSON.stringify(fact.value).toUpperCase();
+      const m = serialized.match(isinPattern);
+      if (m?.[0]) return m[0];
+    } catch {
+      // ignore unserializable values
+    }
+  }
+  return null;
 }
 
 export async function stepExtractFacts(state: PipelineState): Promise<void> {
@@ -185,8 +217,11 @@ export async function stepExtractFacts(state: PipelineState): Promise<void> {
     temperature: 0.1,
     artifactsDir: state.rawDir,
   });
+  const extractedIsin = normalizeIsin(data.isin);
+  const fallbackIsin = extractIsinFromFacts(state.facts);
   state.identity = {
     company_name: data.company_name ?? "",
+    isin: extractedIsin ?? fallbackIsin ?? "",
     exchange: data.exchange ?? "",
     sector: data.sector ?? "",
     industry: data.industry ?? "",
@@ -261,8 +296,8 @@ function sanitizeBlockResult(block: (typeof SECTION_BLOCKS)[number], data: Parti
 
 export async function stepAnswerSections(state: PipelineState): Promise<void> {
   const provider = getLLMConfig().provider;
-  // Ollama: single-flight (stabil), DeepSeek: höhere Parallelität.
-  const sectionConcurrency = provider === "ollama" ? 1 : 7;
+  // Nur DeepSeek stabil mit hoher Parallelität; Ollama/OpenRouter single-flight.
+  const sectionConcurrency = provider === "deepseek" ? 7 : 1;
   const blockResults = await runWithConcurrency(SECTION_BLOCKS as unknown as Array<typeof SECTION_BLOCKS[number]>, sectionConcurrency, async (block) => {
     const { data } = await chatJSON<BlockResult>({
       runId: state.runId,
@@ -434,6 +469,7 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
   const reportData: Report = ReportSchema.parse({
     ticker: state.ticker,
     company_name: state.identity?.company_name ?? "",
+    isin: state.identity?.isin ?? "",
     exchange: state.identity?.exchange ?? "",
     sector: state.identity?.sector ?? "",
     industry: state.identity?.industry ?? "",
@@ -523,6 +559,9 @@ function renderMarkdown(r: Report): string {
   lines.push(`# ${r.ticker} · ${r.company_name}`);
   lines.push("");
   lines.push(`**Datum:** ${r.research_date}  ·  **Gate:** ${r.gate}  ·  **Score:** ${r.growth_research_score}/100  ·  **Kategorie:** ${r.category}  ·  **Confidence:** ${r.confidence}`);
+  if (r.isin) {
+    lines.push(`**ISIN:** ${r.isin}`);
+  }
   lines.push("");
   lines.push("## These");
   lines.push(r.thesis_summary || "_n/a_");
@@ -567,6 +606,10 @@ export async function resolveModels(): Promise<{ extract: string; scoring: strin
   const cfg = getLLMConfig();
   if (cfg.provider === "deepseek") {
     const m = cfg.deepseekModel || "deepseek-chat";
+    return { extract: m, scoring: m, summary: m };
+  }
+  if (cfg.provider === "openrouter") {
+    const m = cfg.openrouterModel || "openrouter/free";
     return { extract: m, scoring: m, summary: m };
   }
   const m = await pickDefaultModel();

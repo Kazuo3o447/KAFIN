@@ -67,13 +67,22 @@ export default function ReportDashboardPage({
   const blockValues = Object.fromEntries(
     (Object.keys(BLOCK_WEIGHTS) as BlockKey[]).map((k) => [k, breakdown[k]]),
   ) as Record<BlockKey, number>;
+  const usedModels = [row.modelExtract, row.modelScoring, row.modelSummary].filter(
+    (v): v is string => Boolean(v),
+  );
+  const uniqueModels = Array.from(new Set(usedModels));
+  const modelLabel = uniqueModels.length <= 1 ? uniqueModels[0] ?? "—" : uniqueModels.join(" / ");
 
   return (
-    <main className={`mx-auto max-w-6xl px-6 py-8 space-y-6 ${isPrint ? "print-mode" : ""}`}>
+    <main
+      className={`mx-auto w-full space-y-4 ${
+        isPrint ? "max-w-none px-2 py-3 print-mode" : "max-w-[92rem] px-3 sm:px-4 lg:px-5 py-5"
+      }`}
+    >
       {/* Hero */}
-      <GlassCard variant={STRIP[report.gate] ?? "default"} className="p-6">
-        <div className="flex flex-col md:flex-row gap-6 items-start">
-          <div className="flex-1">
+      <GlassCard variant={STRIP[report.gate] ?? "default"} className="p-4 sm:p-5">
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
+          <div className="xl:col-span-6">
             <div className="flex items-center gap-3 flex-wrap">
               <h1 className="text-3xl font-semibold tracking-tight font-mono text-accent-400">
                 {report.ticker}
@@ -82,11 +91,16 @@ export default function ReportDashboardPage({
               <span className="text-xs text-secondary-500">{report.exchange}</span>
             </div>
             <div className="mt-2 text-sm text-secondary-400 space-x-3">
+              <span>{report.isin || "ISIN —"}</span>
+              <span>·</span>
               <span>{report.sector || "—"}</span>
               <span>·</span>
               <span>{report.industry || "—"}</span>
               <span>·</span>
               <span>Stand {report.research_date}</span>
+            </div>
+            <div className="mt-2 text-xs text-secondary-500">
+              Modell · <span className="font-mono">{modelLabel}</span>
             </div>
             <div className="mt-4 flex flex-wrap items-center gap-2">
               <span
@@ -119,33 +133,49 @@ export default function ReportDashboardPage({
               </div>
             ) : null}
           </div>
-          <div>
-            <Gauge score={report.growth_research_score} gate={report.gate} size={240} />
+
+          <div className="xl:col-span-3">
+            <Gauge score={report.growth_research_score} gate={report.gate} size={220} />
+          </div>
+
+          <div className="xl:col-span-3 grid grid-cols-2 gap-2">
+            <KpiCard label="Revenue YoY" value={formatPct(km.revenue_growth_yoy)} unit="%" />
+            <KpiCard label="PEG Ratio" value={km.peg} />
+            <KpiCard label="Rule of 40" value={km.rule_of_40} />
+            <KpiCard label="ROIC" value={formatPct(km.roic)} unit="%" />
           </div>
         </div>
       </GlassCard>
 
       {/* Radar + KPIs */}
-      <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <GlassCard className="p-5">
+      <section className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+        <GlassCard className="p-4 xl:col-span-4">
           <h2 className="text-sm uppercase tracking-wide text-secondary-500 mb-3">7-Block-Radar</h2>
           <RadarChart values={blockValues} />
         </GlassCard>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-3 2xl:grid-cols-4 gap-3 xl:col-span-8">
           <KpiCard label="Revenue Growth YoY" value={formatPct(km.revenue_growth_yoy)} unit="%" />
           <KpiCard label="3y CAGR" value={formatPct(km.revenue_cagr_3y)} unit="%" />
           <KpiCard label="Gross Margin" value={formatPct(km.gross_margin)} unit="%" />
+          <KpiCard label="Operating Margin" value={formatPct(km.operating_margin)} unit="%" />
           <KpiCard label="FCF Margin" value={formatPct(km.fcf_margin)} unit="%" />
           <KpiCard label="ROIC" value={formatPct(km.roic)} unit="%" />
+          <KpiCard label="PEG Ratio" value={km.peg} />
           <KpiCard label="Rule of 40" value={km.rule_of_40} />
+          <KpiCard label="Rule of X" value={km.rule_of_x} />
+          <KpiCard label="Share Growth YoY" value={formatPct(km.share_count_growth_yoy)} unit="%" />
+          <KpiCard label="SBC / Revenue" value={formatPct(km.sbc_to_revenue)} unit="%" />
+          <KpiCard label="Net Debt / EBITDA" value={km.net_debt_to_ebitda} />
           <KpiCard label="EV / Sales" value={km.ev_sales} />
+          <KpiCard label="EV / Gross Profit" value={km.ev_gross_profit} />
           <KpiCard label="NTM P/E" value={km.ntm_pe} />
+          <KpiCard label="Beta" value={km.beta} />
         </div>
       </section>
 
       {/* These / Bull / Bear */}
-      <GlassCard className="p-5">
+      <GlassCard className="p-4">
         <h2 className="text-sm uppercase tracking-wide text-secondary-500 mb-2">These</h2>
         <p className="text-sm text-secondary-200 leading-relaxed">
           {report.thesis_summary || "—"}
@@ -191,7 +221,7 @@ export default function ReportDashboardPage({
 
       {/* Hard Blockers */}
       {report.hard_blockers.length > 0 ? (
-        <GlassCard variant="red" className="p-5">
+        <GlassCard variant="red" className="p-4">
           <h2 className="text-sm uppercase tracking-wide text-red-400 mb-2">Hard Blockers</h2>
           <ul className="space-y-1 text-sm">
             {report.hard_blockers.map((b, i) => (
@@ -202,7 +232,7 @@ export default function ReportDashboardPage({
       ) : null}
 
       {report.red_flags.length > 0 ? (
-        <GlassCard variant="red" className="p-5">
+        <GlassCard variant="red" className="p-4">
           <h2 className="text-sm uppercase tracking-wide text-red-400 mb-2">Red Flags</h2>
           <ul className="space-y-1 text-sm">
             {report.red_flags.map((flag, i) => (
@@ -215,7 +245,7 @@ export default function ReportDashboardPage({
       {report.moat_assessment.rating !== "Unknown" ||
       report.moat_assessment.evidence.length > 0 ||
       report.moat_assessment.threats.length > 0 ? (
-        <GlassCard className="p-5">
+        <GlassCard className="p-4">
           <h2 className="text-sm uppercase tracking-wide text-secondary-500 mb-2">
             Moat · {report.moat_assessment.rating}
           </h2>
@@ -246,7 +276,7 @@ export default function ReportDashboardPage({
 
       {/* Catalysts / Open Questions / Falsification */}
       <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <GlassCard className="p-5">
+        <GlassCard className="p-4">
           <h3 className="text-xs uppercase tracking-wide text-accent-400 mb-2">Katalysatoren</h3>
           <ul className="space-y-1 text-sm">
             {report.catalysts.length ? (
@@ -256,7 +286,7 @@ export default function ReportDashboardPage({
             )}
           </ul>
         </GlassCard>
-        <GlassCard className="p-5">
+        <GlassCard className="p-4">
           <h3 className="text-xs uppercase tracking-wide text-amber-400 mb-2">Offene Fragen</h3>
           <ul className="space-y-1 text-sm">
             {report.open_questions.length ? (
@@ -266,7 +296,7 @@ export default function ReportDashboardPage({
             )}
           </ul>
         </GlassCard>
-        <GlassCard className="p-5">
+        <GlassCard className="p-4">
           <h3 className="text-xs uppercase tracking-wide text-secondary-300 mb-2">Falsifikations-Tests</h3>
           <ul className="space-y-1 text-sm">
             {report.falsification_tests.length ? (
@@ -279,7 +309,7 @@ export default function ReportDashboardPage({
       </section>
 
       {/* Quellen */}
-      <GlassCard className="p-5">
+      <GlassCard className="p-4">
         <h2 className="text-sm uppercase tracking-wide text-secondary-500 mb-3">
           Quellen ({report.source_list.length})
         </h2>

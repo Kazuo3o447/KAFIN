@@ -6,7 +6,7 @@
 
 ## 1. Geltungsbereich
 
-Die App unterstützt zwei LLM-Provider: **Ollama** (lokal) und **DeepSeek** (Cloud-API). Der aktive Provider wird in den Einstellungen konfiguriert und per `src/lib/llm/config.ts` gelesen. Alle Aufrufe laufen durch `chatJSON()` in `ollama.ts`, das transparent routet. Alle Calls werden in `data/logs/audit.jsonl` protokolliert.
+Die App unterstützt drei LLM-Provider: **Ollama** (lokal), **DeepSeek** (Cloud-API) und **OpenRouter** (Cloud-API-Gateway). Der aktive Provider wird in den Einstellungen konfiguriert und per `src/lib/llm/config.ts` gelesen. Alle Aufrufe laufen durch `chatJSON()` in `ollama.ts`, das transparent routet. Alle Calls werden in `data/logs/audit.jsonl` protokolliert.
 
 Fachliche Grundlage: [research.md](../research.md), insbesondere §7 (Evidenzklassen), §9–§20 (Scoring/Gate), §21 (Output-Schema), §22 (verbindlicher Agenten-Prompt).
 
@@ -17,36 +17,37 @@ Fachliche Grundlage: [research.md](../research.md), insbesondere §7 (Evidenzkla
 - Provider und Modell werden **ausschließlich in den Einstellungen** (`/settings`) konfiguriert — kein Override im Run-Dialog.
 - **Ollama:** Ruft `GET {OLLAMA_BASE_URL}/api/tags`, cached 30 s, filtert Vision/Embedding-Modelle heraus, nimmt das erste Text-LLM als Default.
 - **DeepSeek:** API-Key und Modellname (`deepseek_model`, Default `deepseek-chat`) aus Settings-DB.
+- **OpenRouter:** API-Key und Modellname (`openrouter_model`, Default `openrouter/free`) aus Settings-DB. Fallback-Chain bei Fehlern: konfiguriertes Modell → `openrouter/free` → `google/gemma-4-31b-it:free` → `openrouter/auto`. Tatsächlich verwendetes Modell wird im Audit-Log vermerkt.
 - `src/lib/llm/config.ts` liest Provider-Config aus DB mit 10 s-Cache. Änderungen in Settings invalidieren den Cache sofort.
 
 ---
 
 ## 3. Agenten-Rollen
 
-### 3.1 Extractor (Step 3)
+### 3.1 Extractor (Step 4a, parallel zu Section-Answerer)
 
-**Zweck:** Aus Rohdaten (yfinance, EDGAR, FMP/AV, RSS-Snippets) eine strukturierte Fakten-Tabelle erzeugen. Keine Bewertung, keine Interpretation.
+**Zweck:** Aus Rohdaten (Yahoo Finance, EDGAR, FMP/AV, RSS-Snippets) eine strukturierte Fakten-Tabelle erzeugen. Keine Bewertung, keine Interpretation.
 
-- **Modell:** `DEFAULT_MODEL_EXTRACT`
+- **Modell:** `modelExtract` (aus Settings)
 - **Temperature:** `0.1`
 - **Format:** `json` (strict)
 - **System-Prompt-Kern:**
-  > Du bist ein Fakten-Extraktor. Du beantwortest ausschließlich auf Basis der bereitgestellten Quellen. Fehlende Werte → `"unknown"`. Erfinde keine Zahlen, keine URLs, keine Zitate. Jede Aussage bekommt eine Quelle aus der mitgelieferten `sources`-Liste (Index-Referenz).
+  > Du bist ein Fakten-Extraktor. Du beantwortest ausschließlich auf Basis der bereitgestellten Quellen. Fehlende Werte → `null`. Erfinde keine Zahlen, keine URLs, keine Zitate. Jede Aussage bekommt eine Quelle aus der mitgelieferten Quellenliste (Index-Referenz).
 
-- **Output-Schema (Zod):** Teilmenge von `research.md` §21 — `key_metrics` + `source_list` + `confidence_per_metric`.
+- **Output-Schema (Zod):** `company_name`, `isin`, `exchange`, `sector`, `industry`, `key_metrics` (alle 16 Felder), `facts[]`. ISIN wird nach Extraktion via `normalizeIsin()` validiert; Fallback: Regex-Suche in allen Provider-Fakten via `extractIsinFromFacts()`.
 
-### 3.2 Section-Answerer (Step 4b, parallel zu 4a)
+### 3.2 Section-Answerer (Step 4b, parallel zu Extractor)
 
 **Zweck:** Pro Score-Block die Indikatoren bewerten (0–10 je Indikator) und eine kurze Begründung mit Quelle liefern. **Vergibt keine Block-Summen** — Gewichtung deterministisch im Backend.
 
-- **Modell:** `DEFAULT_MODEL_SCORING`
+- **Modell:** `modelScoring` (aus Settings)
 - **Temperature:** `0.2`
 - **Format:** `json` (strict)
 - **Rationale:** max 10 Wörter pro Indikator (Performance-Optimierung: kürzere Outputs)
 - **System-Prompt-Kern:**
   > Du bewertest Indikatoren nach `research.md`. Für jeden Indikator: Wert (0–10), max 10 Wörter Begründung, Quellen-Index. Keine Block-Summen. Markiere Red-Flags.
 
-- **Parallelität:** Alle 7 Blöcke gleichzeitig (concurrency=7); Ollama queued intern sequentiell. Extract (Step 4a) läuft gleichzeitig mit allen Sections.
+- **Parallelität:** `deepseek`=7 Blocks gleichzeitig; `ollama`/`openrouter`=1 (sequentiell, Free-Tier-Stabilität). Extractor (Step 4a) läuft gleichzeitig mit dem Section-Answerer.
 
 ### 3.3 Scorer (deterministisch, **kein** LLM)
 

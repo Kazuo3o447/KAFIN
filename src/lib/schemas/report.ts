@@ -100,6 +100,7 @@ export const SourceSchema = z.object({
 export const ReportSchema = z.object({
   ticker: z.string().min(1),
   company_name: z.string().default(""),
+  isin: z.string().default(""),
   exchange: z.string().default(""),
   sector: z.string().default(""),
   industry: z.string().default(""),

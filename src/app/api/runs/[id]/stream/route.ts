@@ -8,13 +8,15 @@ interface RouteParams {
   params: { id: string };
 }
 
-export async function GET(_req: NextRequest, { params }: RouteParams): Promise<Response> {
+export async function GET(req: NextRequest, { params }: RouteParams): Promise<Response> {
   const runId = params.id;
   const entry = ensureRunBus(runId);
+  let cleanup: () => void = () => {};
 
   const stream = new ReadableStream({
     start(controller) {
       const enc = new TextEncoder();
+      let closed = false;
       const send = (event: RunEventName, data: unknown) => {
         const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
         try {
@@ -35,11 +37,19 @@ export async function GET(_req: NextRequest, { params }: RouteParams): Promise<R
       const onStepDone = (d: unknown) => send("step:done", d);
       const onError = (d: unknown) => {
         send("error", d);
-        controller.close();
+        cleanup();
+        if (!closed) {
+          closed = true;
+          controller.close();
+        }
       };
       const onDone = (d: unknown) => {
         send("done", d);
-        controller.close();
+        cleanup();
+        if (!closed) {
+          closed = true;
+          controller.close();
+        }
       };
 
       entry.emitter.on("log", onLog);
@@ -51,7 +61,12 @@ export async function GET(_req: NextRequest, { params }: RouteParams): Promise<R
 
       // Falls Run schon fertig: direkt schließen
       if (isDone(runId)) {
-        controller.close();
+        cleanup();
+        if (!closed) {
+          closed = true;
+          controller.close();
+        }
+        return;
       }
 
       // Heartbeat alle 15s gegen Proxy-Timeouts
@@ -64,7 +79,7 @@ export async function GET(_req: NextRequest, { params }: RouteParams): Promise<R
       }, 15_000);
 
       // Cleanup bei Stream-close (unsubscribe)
-      const cleanup = () => {
+      cleanup = () => {
         clearInterval(hb);
         entry.emitter.off("log", onLog);
         entry.emitter.off("progress", onProgress);
@@ -72,14 +87,24 @@ export async function GET(_req: NextRequest, { params }: RouteParams): Promise<R
         entry.emitter.off("step:done", onStepDone);
         entry.emitter.off("error", onError);
         entry.emitter.off("done", onDone);
+        req.signal.removeEventListener("abort", onAbort);
       };
 
-      // controller.close() ruft kein "cancel" - daher onDone/onError selbst cleanen
-      // Die Reader-cancel-Variante:
-      (controller as unknown as { _kafinCleanup?: () => void })._kafinCleanup = cleanup;
+      const onAbort = () => {
+        cleanup();
+        if (!closed) {
+          closed = true;
+          try {
+            controller.close();
+          } catch {
+            /* already closed */
+          }
+        }
+      };
+      req.signal.addEventListener("abort", onAbort);
     },
     cancel() {
-      // Reader hat abgebrochen (Tab geschlossen)
+      cleanup();
     },
   });
 

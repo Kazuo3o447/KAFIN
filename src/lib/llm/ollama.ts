@@ -14,6 +14,7 @@ import { atomicWrite } from "@/lib/utils/atomic-write";
 import { parseRobustJSON } from "./repair";
 import { getLLMConfig } from "./config";
 import { chatJSONDeepSeek } from "./deepseek";
+import { chatJSONOpenRouter } from "./openrouter";
 
 const baseUrl = (process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/$/, "");
 export const ollama = new Ollama({ host: baseUrl });
@@ -95,6 +96,10 @@ export async function chatJSON<T = unknown>(opts: ChatJSONOptions): Promise<Chat
   if (llmConfig.provider === "deepseek") {
     if (!llmConfig.deepseekApiKey) throw new Error("DeepSeek API-Key nicht konfiguriert (Einstellungen → LLM Provider).");
     return chatJSONDeepSeek<T>(opts, llmConfig.deepseekApiKey, llmConfig.deepseekModel);
+  }
+  if (llmConfig.provider === "openrouter") {
+    if (!llmConfig.openrouterApiKey) throw new Error("OpenRouter API-Key nicht konfiguriert (Einstellungen → LLM Provider).");
+    return chatJSONOpenRouter<T>(opts, llmConfig.openrouterApiKey, llmConfig.openrouterModel);
   }
 
   const messages: Message[] = [];

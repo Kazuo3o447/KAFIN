@@ -4,6 +4,57 @@
 
 ---
 
+## Aktueller Stand — 2026-05-22 (Update 9)
+
+**Phase:** 5 — OpenRouter-Provider, ISIN-Integration, dichteres Audit-Dashboard, Export-Refactor.
+
+### Vorhanden (zusätzlich zu Update 8)
+
+#### OpenRouter-Provider (Ersatz für DeepSeek als bevorzugter Cloud-Provider)
+- **`src/lib/llm/openrouter.ts`** (NEU): OpenAI-kompatibler Client gegen `https://openrouter.ai/api/v1`. Retry/Backoff bei transienten HTTP-Fehlern und Netzwerk-Timeouts, `AbortSignal.timeout` für harten Cutoff, Fallback-Modell-Kandidaten-Chain (`openrouter/free` → `google/gemma-4-31b-it:free` → `openrouter/auto`), Audit-Log schreibt verwendetes Modell.
+- **`src/lib/llm/config.ts`** (GEÄNDERT): `LLMConfig` um `openrouterApiKey` und `openrouterModel` (Default `openrouter/free`) erweitert.
+- **`src/lib/llm/ollama.ts`** (GEÄNDERT): `chatJSON()` routet jetzt dreifach: `openrouter` → `deepseek` → `ollama`.
+- **`src/app/api/settings/test-llm/route.ts`** (GEÄNDERT): Unterstützt OpenRouter-Konnektivitätstest (1-Token-Call mit `openrouter/free`-Fallback).
+- **`src/app/settings/page.tsx`** (GEÄNDERT): Dritter Provider-Tab „OpenRouter", API-Key-Eingabe + Modellfeld, „Verbindung testen"-Button.
+- **`src/app/page.tsx`** (GEÄNDERT): Provider-Status-Banner erkennt jetzt auch `openrouter`; kein Ollama-Modell-Override bei OpenRouter.
+
+#### Pipeline-Stabilisierung
+- **`src/lib/orchestrator/steps.ts`** (GEÄNDERT): Section-Concurrency: `deepseek`=7, `ollama`/`openrouter`=1 (stabilere Verarbeitung für externe Free-Tier-APIs).
+- **`src/app/api/runs/[id]/stream/route.ts`** (GEÄNDERT): SSE-Cleanup konsequent bei `done`/`error`/`cancel`/`abort` — verhindert Listener-Leaks bei Reconnects.
+- **`src/lib/orchestrator/events.ts`** (GEÄNDERT): Max-Listener auf unbegrenzt (`0`) gesetzt, verhindert `MaxListenersExceededWarning` unter Last.
+
+#### ISIN-Feld (Ende-zu-Ende)
+- **`src/lib/schemas/report.ts`** (GEÄNDERT): `ReportSchema` um `isin: z.string().default("")` erweitert. Abwärtskompatibel (Default leer).
+- **`src/lib/llm/prompts.ts`** (GEÄNDERT): Extractor-Prompt fordert `"isin": string|null` explizit an.
+- **`src/lib/orchestrator/steps.ts`** (GEÄNDERT): `ExtractorOutput`-Interface um `isin` ergänzt. Neue Hilfsfunktionen `normalizeIsin()` (ISIN-Format-Validierung) und `extractIsinFromFacts()` (Regex-Fallback aus Provider-Fakten). ISIN wird in `state.identity` und in `reportData` persistiert.
+- **`src/app/reports/[id]/page.tsx`** (GEÄNDERT): ISIN wird im Audit-Dashboard-Header unter Ticker/Company sichtbar angezeigt.
+
+#### Dichteres Audit-Dashboard-Layout
+- **`src/app/reports/[id]/page.tsx`** (GEÄNDERT):
+  - Container `max-w-6xl` → `max-w-[92rem]`, Innenabstände reduziert (`px-3 sm:px-4 lg:px-5`).
+  - Hero-Bereich als 12-Spalten-Grid: Identität/Badges (6 Spalten) · Gauge (3 Spalten) · Quick-KPIs (3 Spalten).
+  - KPI-Sektion: 8 → 16 Kennzahlen (neu: Operating Margin, ROIC, Rule of X, Share Growth YoY, SBC/Revenue, Net Debt/EBITDA, EV/Gross Profit, Beta).
+  - Radar-Karte nimmt 4 von 12 Spalten, KPI-Grid 8/12.
+  - Card-Padding durchgängig `p-4` statt `p-5` für mehr Inhaltsdichte.
+- **`src/lib/export/pdf.ts`** (GEÄNDERT): PDF-Seitenränder von `16mm/12mm` auf `10mm/6mm` reduziert.
+
+#### Export-Refactor
+- **`src/components/ExportButtons.tsx`** (GEÄNDERT): Drei Einzel-Buttons → einzelnes Dropdown-Menü. Formate: Excel · JSON · PDF (PPTX-Schaltfläche entfernt).
+- **`src/app/api/reports/[id]/export/json/route.ts`** (NEU): Vollständiger Audit-JSON-Export — enthält Report-JSON, Metadaten (inkl. verwendete Modelle), gefilterte Run-Events aus `runs.jsonl`, LLM-Audit-Calls aus `audit.jsonl` und Prompt/Response-Artefakte aus `data/raw`. Dateiname: `{TICKER}_{DATUM}_audit.json`.
+
+### Behobene Bugs
+| Bug | Ursache | Fix |
+|---|---|---|
+| SSE-Listener-Leak bei Reconnect | Cleanup fehlte bei `cancel`/`abort`-Pfad | Cleanup in allen Exit-Pfaden |
+| `MaxListenersExceededWarning` | EventEmitter-Default-Limit (10) bei vielen Reconnects | Max-Listener auf 0 (unbegrenzt) |
+| Provider-Fehler bei OpenRouter Free-Tier | Transiente 5xx + Netzwerk-Timeouts | Retry/Backoff + `AbortSignal.timeout` + Fallback-Chain |
+
+### Verifiziert (Update 9)
+- `npm run typecheck` ✅ (exit 0)
+- JSON-Export-Endpoint HTTP 200 (Smoke-Test) ✅
+
+---
+
 ## Aktueller Stand — 2026-05-22 (Update 8)
 
 **Phase:** 4 — DeepSeek-Integration, LLM-Provider-Umschalter, Pipeline-Fixes, Performance-Optimierungen.
@@ -128,10 +179,11 @@
 
 ## Nächste Schritte (priorisiert)
 
-1. **End-to-End-Test mit echtem Ollama:** `ollama serve` + Run für `AAPL`/`MSFT`, Audit-Dashboard inkl. Indikator-Tabellen und Compare-Page prüfen.
-2. **Provider-Robustheit:** EDGAR Throttle/Cache-Tests + yfinance-Fallback-Pfade gegen echte Tickers verifizieren.
-3. **Compare-Export:** PDF/PPTX-Export der Vergleichsseite (Re-use der bestehenden Export-Pipeline mit `?print=1`).
-4. **Watchlist-Notes-Test:** Optional E2E-Test für Inline-Edit-Flow.
+1. **End-to-End-Run mit OpenRouter-Credits:** Sobald Account-Credits vorhanden, vollständigen Run für `HIMS` oder anderer Ticker durchführen und ISIN-Extraktion verifizieren.
+2. **ISIN-Quelle verbessern:** OpenFIGI-API oder OpenLEI als dedizierte ISIN-Quelle einbinden (Provider-Adapter, Class B), damit ISIN auch ohne LLM-Extraktion zuverlässig befüllt wird.
+3. **Provider-Robustheit:** EDGAR Throttle/Cache-Tests + yfinance-Fallback-Pfade gegen echte Tickers verifizieren.
+4. **Compare-Export:** PDF-Export der Vergleichsseite (Re-use der bestehenden Export-Pipeline mit `?print=1`).
+5. **E2E-Tests auf Stand bringen:** Smoke-Tests um Export-Dropdown und ISIN-Anzeige erweitern.
 
 ---
 
@@ -160,6 +212,7 @@
 
 ## Changelog
 
+- **2026-05-22 (Update 9)** — OpenRouter-Provider (`openrouter.ts` mit Retry/Backoff/Fallback-Chain), ISIN Ende-zu-Ende (Schema + Extraktor-Prompt + Pipeline + Dashboard), Audit-Dashboard dichter (16 KPIs, 12-Spalten-Grid, kleinere Paddings), Export-Dropdown (PPTX entfernt, JSON hinzugefügt), neuer Audit-JSON-Export-Endpoint, PDF-Ränder verkleinert, SSE-Cleanup + MaxListeners-Fix. `tsc --noEmit` ✅
 - **2026-05-22 (Update 8)** — DeepSeek-Provider-Support (`config.ts`, `deepseek.ts`), Settings-API + Einstellungsseite (Provider-Toggle, Test-Verbindung), Logs-Seite neu (runs.jsonl + audit.jsonl), SSE-Bus auf `globalThis` (Fix "warte auf Start"), Ollama `stream:true` (Fix undici headersTimeout), Pipeline parallel (Extract+Sections gleichzeitig), Context 32K→18K / 22K→12K, Rationale max 10 Wörter, Section-Concurrency 2→7. `tsc --noEmit` ✅
 - **2026-05-20 (Update 7)** — Versionsvergleich: `report-diff`-Lib + `/reports/compare/[a]/[b]`-Page (Score-Δ, Block-Δ, Indikator-Δ, Key-Metrics-Δ, Listen-Δ, Thesis vorher/nachher), Reports-Liste mit „vs. Vorgänger"-Button, Watchlist-Notes inline editierbar + Unpin. 23/23 Unit, 8/8 E2E, 18 Build-Routen.
 - **2026-05-20 (Update 6)** — Sidebar-Refactor (links, ohne Symbole), Watchlist-Pin-API + PinButton, Score-Indikator-Persistenz (`block_audits` in Report-JSON, Indikator-Tabelle im Dashboard), Playwright E2E-Smoke (8/8). Phase 3 abgeschlossen.

@@ -48,7 +48,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     .run();
 
   // LLM-Konfigurations-Cache invalidieren wenn Provider-Einstellungen geändert wurden
-  if (body.key.startsWith("llm_") || body.key.startsWith("deepseek_")) {
+  if (body.key.startsWith("llm_") || body.key.startsWith("deepseek_") || body.key.startsWith("openrouter_")) {
     invalidateLLMConfigCache();
   }
 

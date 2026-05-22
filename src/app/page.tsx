@@ -13,7 +13,7 @@ export default function HomePage() {
   const [ticker, setTicker] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const [provider, setProvider] = useState<"ollama" | "deepseek" | null>(null);
+  const [provider, setProvider] = useState<"ollama" | "deepseek" | "openrouter" | null>(null);
   const [providerStatus, setProviderStatus] = useState<{ ok: boolean; message: string } | null>(null);
 
   // Aktuellen LLM-Provider laden und sofort testen
@@ -21,7 +21,7 @@ export default function HomePage() {
     fetch("/api/settings?key=llm_provider")
       .then((r) => r.json())
       .then((d: { value: unknown }) => {
-        const p = d.value === "deepseek" ? "deepseek" : "ollama";
+        const p = d.value === "deepseek" || d.value === "openrouter" ? d.value : "ollama";
         setProvider(p);
         // Provider im Hintergrund testen
         fetch("/api/settings/test-llm")
@@ -44,7 +44,7 @@ export default function HomePage() {
       const body: Record<string, unknown> = { ticker: t };
       // Gespeichertes Ollama-Modell aus den Einstellungen verwenden
       const savedModel = localStorage.getItem("kafin.defaultModel");
-      if (savedModel && provider !== "deepseek") {
+      if (savedModel && provider === "ollama") {
         body.modelOverride = { extract: savedModel, scoring: savedModel, summary: savedModel };
       }
       const r = await fetch("/api/runs", {
@@ -73,6 +73,8 @@ export default function HomePage() {
           Fundamentale Analyse mit{" "}
           {provider === "deepseek" ? (
             <span className="text-accent-400 font-medium">DeepSeek API</span>
+          ) : provider === "openrouter" ? (
+            <span className="text-violet-300 font-medium">OpenRouter</span>
           ) : (
             <span className="text-secondary-300 font-medium">Ollama (lokal)</span>
           )}
@@ -86,7 +88,7 @@ export default function HomePage() {
           <span className="text-base leading-none mt-0.5 shrink-0">✗</span>
           <div>
             <span className="font-medium">
-              {provider === "deepseek" ? "DeepSeek API" : "Ollama"} nicht erreichbar
+              {provider === "deepseek" ? "DeepSeek API" : provider === "openrouter" ? "OpenRouter" : "Ollama"} nicht erreichbar
             </span>
             <span className="text-red-400 ml-2">{providerStatus.message}</span>
             <Link href="/settings" className="ml-3 underline underline-offset-2 hover:text-red-200">
@@ -98,7 +100,7 @@ export default function HomePage() {
       {providerStatus && providerStatus.ok && (
         <div className="flex items-center gap-2 text-xs text-secondary-500">
           <span className="w-2 h-2 rounded-full bg-green-500 inline-block" />
-          {provider === "deepseek" ? "DeepSeek API" : "Ollama"} · {providerStatus.message}
+          {provider === "deepseek" ? "DeepSeek API" : provider === "openrouter" ? "OpenRouter" : "Ollama"} · {providerStatus.message}
         </div>
       )}
 

@@ -1,22 +1,26 @@
 /**
  * LLM-Provider-Konfiguration. Liest Provider-Einstellungen aus der Settings-Tabelle.
- * Unterstützt "ollama" (lokal) und "deepseek" (Cloud-API).
+ * Unterstützt "ollama" (lokal), "deepseek" und "openrouter" (Cloud-API).
  */
 import { db, schema } from "@/lib/storage/db";
 import { eq } from "drizzle-orm";
 
-export type LLMProvider = "ollama" | "deepseek";
+export type LLMProvider = "ollama" | "deepseek" | "openrouter";
 
 export interface LLMConfig {
   provider: LLMProvider;
   deepseekApiKey: string;
   deepseekModel: string;
+  openrouterApiKey: string;
+  openrouterModel: string;
 }
 
 const DEFAULTS: LLMConfig = {
   provider: "ollama",
   deepseekApiKey: "",
   deepseekModel: "deepseek-chat",
+  openrouterApiKey: "",
+  openrouterModel: "openrouter/free",
 };
 
 let cache: { ts: number; config: LLMConfig } | null = null;
@@ -40,6 +44,8 @@ export function getLLMConfig(): LLMConfig {
     provider: (readKey("llm_provider") as LLMProvider | null) ?? DEFAULTS.provider,
     deepseekApiKey: readKey("deepseek_api_key") ?? DEFAULTS.deepseekApiKey,
     deepseekModel: readKey("deepseek_model") ?? DEFAULTS.deepseekModel,
+    openrouterApiKey: readKey("openrouter_api_key") ?? DEFAULTS.openrouterApiKey,
+    openrouterModel: readKey("openrouter_model") ?? DEFAULTS.openrouterModel,
   };
   cache = { ts: Date.now(), config };
   return config;
