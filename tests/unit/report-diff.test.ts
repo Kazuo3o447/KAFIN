@@ -119,9 +119,9 @@ describe("diffReports", () => {
       ],
     });
     const d = diffReports({ id: "a", report: a }, { id: "b", report: b });
-    expect(d.indicators[0]?.name).toBe("Revenue Growth");
+    expect(d.indicators[0]?.name).toBe("revenue_growth_quality");
     expect(d.indicators[0]?.delta).toBe(2);
-    expect(d.indicators[1]?.name).toBe("TAM");
+    expect(d.indicators[1]?.name).toBe("tam_share_gain_evidence");
     expect(d.indicators[1]?.delta).toBe(-1);
     expect(d.indicators[1]?.rationaleChanged).toBe(true);
   });

@@ -78,14 +78,16 @@
 
 ---
 
-## 5. LLM-Regeln (Ollama)
+## 5. LLM-Regeln (Ollama / DeepSeek)
 
-- Modell-Liste dynamisch via `GET /api/tags`. UI zeigt Dropdown.
-- Per Research-Run wählbar: `extraction_model`, `scoring_model`, `summary_model`, `redteam_model` (Phase 2). Defaults aus User-Settings, Fallback = erstes verfügbares Modell.
-- **Jeder** LLM-Call schreibt nach `data/logs/audit.jsonl` (`run_id`, `step`, `model`, `prompt_hash`, `prompt_path`, `response_path`, `tokens`, `latency_ms`, `temperature`).
-- Temperature default `0.2` für Extraktion/Scoring, `0.4` für Summaries, `0.6` für Red-Team.
-- Schema-Validierung jedes JSON-Outputs gegen Zod-Schema (`research.md` §21). Bei Fehlschlag: 1× Retry mit Repair-Prompt, dann Run als `failed` markieren — kein Silent-Fallback.
-- Kein Streaming in Persistenz, nur im UI-Log.
+- **Zwei Provider** wählbar über Einstellungsseite: `ollama` (lokal) und `deepseek` (Cloud-API, OpenAI-kompatibel).
+- Provider-Konfiguration in SQLite `settings`-Tabelle (Schlüssel: `llm_provider`, `deepseek_api_key`, `deepseek_model`). Lese-Cache 10 s via `src/lib/llm/config.ts`.
+- **Ollama:** Modell-Liste dynamisch via `GET /api/tags`. Default = erstes geeignetes Text-LLM (Vision/Embedding-Modelle werden gefiltert). Modellauswahl **nur in den Einstellungen**, nicht im Run-Dialog.
+- **Ollama Streaming:** Alle Chat-Calls mit `stream: true` — umgeht den undici `headersTimeout` von 300 s bei langsamen/großen Modellen.
+- **DeepSeek:** Modell `deepseek_model` (Default `deepseek-chat`). API-Key aus Settings. `response_format: { type: "json_object" }`.
+- **Jeder** LLM-Call schreibt nach `data/logs/audit.jsonl` (`run_id`, `step`, `model`, `prompt_hash`, `prompt_path`, `response_path`, `ms`, `ok`, `error`).
+- Temperature default `0.1` für Extraktion, `0.2` für Scoring, `0.4` für Summaries.
+- Schema-Validierung via Zod. Bei Fehlschlag: 1× Repair-Retry, dann Run als `failed` — kein Silent-Fallback.
 
 ---
 

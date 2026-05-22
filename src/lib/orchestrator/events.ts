@@ -11,6 +11,12 @@
  *  - `done`       { reportId, gate, scoreTotal }
  */
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import path from "node:path";
+
+const LOG_DIR = path.join(process.env.DATA_DIR || "./data", "logs");
+const RUN_LOG_PATH = path.join(LOG_DIR, "runs.jsonl");
+fs.mkdirSync(LOG_DIR, { recursive: true });
 
 export type LogLevel = "info" | "warn" | "error" | "debug";
 
@@ -55,7 +61,15 @@ interface BusEntry {
   done: boolean;
 }
 
-const bus = new Map<string, BusEntry>();
+// An globalThis hängen, damit in Next.js-Dev-Mode alle Route-Module
+// (die jeweils eigene module-Instanzen bekommen können) denselben Bus teilen.
+type GlobalBus = Map<string, BusEntry>;
+declare global {
+  // eslint-disable-next-line no-var
+  var __kafinRunBus: GlobalBus | undefined;
+}
+if (!globalThis.__kafinRunBus) globalThis.__kafinRunBus = new Map<string, BusEntry>();
+const bus: GlobalBus = globalThis.__kafinRunBus;
 const BUFFER_LIMIT = 500;
 
 export function ensureRunBus(runId: string): BusEntry {
@@ -90,7 +104,14 @@ export function isDone(runId: string): boolean {
 }
 
 export function logRun(runId: string, level: LogLevel, msg: string): void {
-  emitRun(runId, "log", { ts: new Date().toISOString(), level, msg } satisfies LogEvent);
+  const ts = new Date().toISOString();
+  // In Datei persistieren, damit Logs nach dem Run nachlesbar bleiben
+  try {
+    fs.appendFileSync(RUN_LOG_PATH, JSON.stringify({ ts, level, msg, runId }) + "\n", "utf8");
+  } catch {
+    /* Disk-Fehler sollen den Run nicht abbrechen */
+  }
+  emitRun(runId, "log", { ts, level, msg } satisfies LogEvent);
 }
 
 export function makeRunLogger(runId: string): (msg: string) => void {

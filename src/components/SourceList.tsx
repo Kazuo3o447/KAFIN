@@ -26,27 +26,34 @@ export function SourceList({ sources }: Props) {
   }
   return (
     <ol className="space-y-2 text-sm">
-      {sources.map((s) => (
-        <li key={s.idx} className="flex items-start gap-3">
-          <span className="font-mono text-xs text-secondary-500 mt-0.5 w-8 shrink-0">
-            [{s.idx}]
-          </span>
-          <span
-            className={`text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border ${KLASS_COLOR[s.class]}`}
-            title={`Klasse ${s.class}`}
-          >
-            {s.class}
-          </span>
-          <a
-            href={s.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-accent-400 hover:underline break-all"
-          >
-            {s.title || s.url}
-          </a>
-        </li>
-      ))}
+      {sources.map((s) => {
+        const isLink = /^https?:\/\//i.test(s.url);
+        return (
+          <li key={s.idx} className="flex items-start gap-3">
+            <span className="font-mono text-xs text-secondary-500 mt-0.5 w-8 shrink-0">
+              [{s.idx}]
+            </span>
+            <span
+              className={`text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border ${KLASS_COLOR[s.class]}`}
+              title={`Klasse ${s.class}`}
+            >
+              {s.class}
+            </span>
+            {isLink ? (
+              <a
+                href={s.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-accent-400 hover:underline break-all"
+              >
+                {s.title || s.url}
+              </a>
+            ) : (
+              <span className="text-secondary-300 break-all">{s.title || s.url}</span>
+            )}
+          </li>
+        );
+      })}
     </ol>
   );
 }

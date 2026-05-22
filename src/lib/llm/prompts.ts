@@ -1,37 +1,42 @@
 /**
- * LLM-Prompts für die 4 Agent-Rollen aus docs/AGENT.md.
- * Halten sich an research.md (Vokabular der Score-Blöcke A–G,
- * Source-Klassen, Gates).
+ * LLM prompts for the research pipeline.
  *
- * Convention: Output ist IMMER ein einzelnes JSON-Objekt (kein Markdown).
+ * Output convention: always a single JSON object, no Markdown.
  */
+import type { BlockKey } from "@/lib/scoring/weights";
+import { formatBlockRubric } from "@/lib/research/rubric";
 
 export const SECTION_BLOCKS = [
-  { id: "growth_market", label: "A · Growth & Market", maxWeight: 18 },
-  { id: "unit_economics_margins", label: "B · Unit Economics & Margins", maxWeight: 14 },
-  { id: "quality_moat", label: "C · Quality & Moat", maxWeight: 18 },
-  { id: "valuation", label: "D · Valuation", maxWeight: 14 },
-  { id: "capital_discipline_dilution", label: "E · Capital Discipline & Dilution", maxWeight: 12 },
-  { id: "catalysts_revisions_sentiment", label: "F · Catalysts, Revisions, Sentiment", maxWeight: 12 },
-  { id: "risk_fragility", label: "G · Risk & Fragility", maxWeight: 12 },
+  { id: "growth_market", label: "A - Growth & Market", maxWeight: 18 },
+  { id: "unit_economics_margins", label: "B - Unit Economics & Margins", maxWeight: 14 },
+  { id: "quality_moat", label: "C - Quality & Moat", maxWeight: 18 },
+  { id: "valuation", label: "D - Valuation", maxWeight: 14 },
+  { id: "capital_discipline_dilution", label: "E - Capital Discipline & Dilution", maxWeight: 12 },
+  { id: "catalysts_revisions_sentiment", label: "F - Catalysts, Revisions, Sentiment", maxWeight: 12 },
+  { id: "risk_fragility", label: "G - Risk & Fragility", maxWeight: 12 },
 ] as const;
 
 export type BlockId = (typeof SECTION_BLOCKS)[number]["id"];
 
 const COMMON_RULES = `Regeln:
-- Antworte ausschließlich mit einem einzigen JSON-Objekt. Kein Markdown, keine Kommentare.
+- Antworte ausschliesslich mit einem einzigen JSON-Objekt. Kein Markdown, keine Kommentare.
 - Wenn ein Wert nicht aus dem Kontext belegbar ist: setze \`null\` oder "unknown". Erfinde NICHTS.
 - Jede Aussage MUSS auf eine Quelle aus der Quellenliste verweisen (sourceIdx).
-- Verwende ausschließlich den bereitgestellten Kontext.`;
+- sourceIdx muss eine vorhandene Nummer aus # QUELLEN sein; wenn die Quelle den Sachverhalt nicht enthaelt, setze sourceIdx=null.
+- Verwende ausschliesslich den bereitgestellten Kontext.`;
 
-export const EXTRACTOR_SYSTEM = `Du bist ein nüchterner Finanzdaten-Extraktor.
+export const EXTRACTOR_SYSTEM = `Du bist ein nuechterner Finanzdaten-Extraktor.
 Deine Aufgabe: aus dem Kontext (Suchergebnisse, EDGAR-Filings, Yahoo-Finance-Daten, RSS-News)
-strukturierte Fakten extrahieren – ohne Interpretation.
+strukturierte Fakten extrahieren - ohne Interpretation.
 ${COMMON_RULES}`;
 
 export const EXTRACTOR_USER = (ticker: string, context: string) => `TICKER: ${ticker}
 KONTEXT:
 ${context}
+
+Berechnete Kennzahlen mit Feldern wie derived_rule_of_40, derived_revenue_cagr_3y,
+derived_share_count_growth_yoy oder derived_net_debt_to_ebitda wurden bereits deterministisch
+berechnet. Uebernimm sie, wenn vorhanden; rechne diese Werte nicht selbst.
 
 Extrahiere ein JSON mit folgender Struktur (key_metrics, identity, sources):
 {
@@ -61,13 +66,16 @@ Extrahiere ein JSON mit folgender Struktur (key_metrics, identity, sources):
 }`;
 
 export const SECTION_SYSTEM = `Du bist ein Senior Equity-Analyst.
-Aufgabe: Bewerte den Block aus research.md anhand seiner Indikatoren auf Skala 0–10.
-Jede Indikator-Bewertung benötigt: Wert, kurze Begründung (max 2 Sätze), sourceIdx.
+Aufgabe: Bewerte den Block anhand der festen research.md-Rubrik.
+Jede Indikator-Bewertung ist ein normierter Score von 0 bis 10 und benoetigt eine kurze Begruendung (max 10 Woerter) sowie sourceIdx.
+Nutze die vorgegebenen indicator.name Keys exakt; erfinde keine neuen Indikatornamen.
 ${COMMON_RULES}`;
 
 export const SECTION_USER = (block: { id: string; label: string }, ticker: string, context: string) =>
   `BLOCK: ${block.label}
 TICKER: ${ticker}
+${formatBlockRubric(block.id as BlockKey)}
+
 KONTEXT:
 ${context}
 
@@ -78,11 +86,15 @@ Liefere JSON:
     { "name": string, "score": number|null, "rationale": string, "sourceIdx": number|null }
   ],
   "confidence": "low"|"medium"|"high",
-  "hard_blockers": [string]
+  "red_flags": [string],
+  "hard_blockers": [string],
+  "moat_rating": "Wide"|"Narrow"|"Emerging"|"No Moat"|"Negative Trend"|"Unknown"|null,
+  "moat_evidence": [string],
+  "moat_threats": [string]
 }`;
 
-export const SUMMARY_SYSTEM = `Du bist ein präziser Investment-Berichts-Autor.
-Schreibe konzentriert; Stil: nüchtern, faktenbasiert, ohne Marketing-Sprache.
+export const SUMMARY_SYSTEM = `Du bist ein praeziser Investment-Berichts-Autor.
+Schreibe konzentriert; Stil: nuechtern, faktenbasiert, ohne Marketing-Sprache.
 ${COMMON_RULES}`;
 
 export const SUMMARY_USER = (

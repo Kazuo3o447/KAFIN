@@ -24,6 +24,39 @@ const FEEDS = (ticker: string): Array<{ url: string; klass: "C" | "D"; label: st
   },
 ];
 
+const SPAM_PATTERNS = [
+  /\btop\s+\d+\s+stocks\b/i,
+  /\b\d+\s+stocks\s+to\s+(buy|sell|watch)\b/i,
+  /\bbest\s+stocks?\s+to\s+buy\b/i,
+  /\bstocks?\s+that\s+could\s+make\s+you\s+(rich|a\s+millionaire)\b/i,
+  /\bbillionaire[s]?\s+(are\s+)?buying\b/i,
+  /\bshould\s+you\s+buy\b/i,
+  /\bis\s+.+\s+a\s+buy\b/i,
+  /\bmotley\s+fool\b/i,
+  /\bzacks\b/i,
+  /\binvestorplace\b/i,
+  /\bwatchlist:\s*\d+\b/i,
+  /\betf\b/i,
+];
+
+function normalizeTitle(title: string): string {
+  return title.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function isUsableNewsItem(
+  ticker: string,
+  item: { title?: string; link?: string; contentSnippet?: string; content?: string },
+): boolean {
+  const title = item.title ?? "";
+  const snippet = item.contentSnippet ?? item.content ?? "";
+  const text = `${title} ${snippet}`;
+  if (!title || !item.link) return false;
+  if (SPAM_PATTERNS.some((pattern) => pattern.test(text))) return false;
+
+  const tickerPattern = new RegExp(`(^|[^a-z0-9])${ticker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`, "i");
+  return tickerPattern.test(text) || tickerPattern.test(item.link);
+}
+
 export const rssProvider: DataProvider = {
   name: "rss",
   available: () => true,
@@ -43,7 +76,16 @@ export const rssProvider: DataProvider = {
             contentType: "application/json",
             data: parsed,
           });
-          const items = (parsed.items ?? []).slice(0, 15);
+          const seenTitles = new Set<string>();
+          const items = (parsed.items ?? [])
+            .filter((item) => isUsableNewsItem(ctx.ticker, item))
+            .filter((item) => {
+              const key = normalizeTitle(item.title ?? item.link ?? "");
+              if (seenTitles.has(key)) return false;
+              seenTitles.add(key);
+              return true;
+            })
+            .slice(0, 10);
           items.forEach((item, idx) => {
             if (!item.link) return;
             facts.push({

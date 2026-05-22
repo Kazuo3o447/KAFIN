@@ -79,6 +79,7 @@ export const BlockAuditSchema = z.object({
   indicators: z.array(BlockIndicatorSchema).default([]),
   confidence: ConfidenceSchema.default("medium"),
   hard_blockers: z.array(z.string()).default([]),
+  red_flags: z.array(z.string()).default([]),
 });
 export type BlockAudit = z.infer<typeof BlockAuditSchema>;
 
@@ -138,12 +139,17 @@ export const SectionAnswerSchema = z.object({
   ]),
   indicators: z.array(
     z.object({
-      key: z.string(),
-      value: z.number().min(0).max(10).nullable(),
+      name: z.string(),
+      score: z.number().min(0).max(10).nullable(),
       rationale: z.string().default(""),
-      sourceIdx: z.array(z.number().int().nonnegative()).default([]),
+      sourceIdx: z.number().int().nonnegative().nullable().default(null),
     }),
   ),
+  confidence: ConfidenceSchema.default("medium"),
+  hard_blockers: z.array(z.string()).default([]),
   red_flags: z.array(z.string()).default([]),
+  moat_rating: MoatRatingSchema.nullable().optional(),
+  moat_evidence: z.array(z.string()).default([]),
+  moat_threats: z.array(z.string()).default([]),
 });
 export type SectionAnswer = z.infer<typeof SectionAnswerSchema>;

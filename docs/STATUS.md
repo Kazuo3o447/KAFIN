@@ -4,6 +4,57 @@
 
 ---
 
+## Aktueller Stand — 2026-05-22 (Update 8)
+
+**Phase:** 4 — DeepSeek-Integration, LLM-Provider-Umschalter, Pipeline-Fixes, Performance-Optimierungen.
+
+### Vorhanden (zusätzlich zu Update 7)
+
+#### LLM-Provider-Schicht
+- **`src/lib/llm/config.ts`** (NEU): Liest Provider-Konfiguration aus SQLite `settings`-Tabelle (10 s-Cache). Typ `LLMConfig` = `{ provider: "ollama"|"deepseek"; deepseekApiKey; deepseekModel }`. Schlüssel: `llm_provider`, `deepseek_api_key`, `deepseek_model`.
+- **`src/lib/llm/deepseek.ts`** (NEU): OpenAI-kompatibler DeepSeek-API-Client (`https://api.deepseek.com`), gleiche `ChatJSONOptions`-Schnittstelle wie Ollama, JSON-Repair-Retry, Audit-Log.
+- **`src/lib/llm/ollama.ts`** (GEÄNDERT): `chatJSON()` routet jetzt via `getLLMConfig()` zu DeepSeek oder Ollama. Ollama-Calls verwenden nun **`stream: true`** (Token-Streaming) statt `stream: false` — behebt den undici `headersTimeout`-Crash nach 300 s bei großen Modellen.
+
+#### Settings-API
+- **`src/app/api/settings/route.ts`** (NEU): `GET /api/settings` (alle oder per `?key=`), `POST /api/settings` (upsert). Invalidiert LLM-Config-Cache bei `llm_*`/`deepseek_*`-Keys automatisch.
+- **`src/app/api/settings/test-llm/route.ts`** (NEU): `GET /api/settings/test-llm` → `{ ok, message }`. Testet DeepSeek (1-Token-Chat mit 15 s AbortSignal) oder Ollama (`/api/tags` mit 5 s AbortSignal).
+
+#### Einstellungsseite
+- **`src/app/settings/page.tsx`** (VOLLSTÄNDIG ÜBERARBEITET): Provider-Toggle (Ollama / DeepSeek), Ollama-Sektion mit ModelSelector + Base-URL-Input, DeepSeek-Sektion mit API-Key-Input (show/hide) + Modell-Name. „Speichern" + „Verbindung testen" nebeneinander. Testergebnis als farbiger Block (grün ✓ / rot ✗).
+
+#### Startseite
+- **`src/app/page.tsx`** (GEÄNDERT): ModelSelector **entfernt** — Modellauswahl ausschließlich über Einstellungen. Provider-Status-Banner (lädt Provider aus API, testet Verbindung beim Start). Rotes Error-Banner bei nicht erreichbarem Provider mit Link zu Einstellungen.
+
+#### Logs-Seite
+- **`src/app/logs/page.tsx`** (VOLLSTÄNDIG ÜBERARBEITET): Server-Component mit `force-dynamic`. Liest `data/logs/runs.jsonl` (letzte 300) und `data/logs/audit.jsonl` (letzte 100). Zwei Sektionen: Pipeline-Logs (Zeitstempel, Level-Badge, runId, Message) und LLM-Audit-Tabelle (Zeit, Run, Step, Modell, Dauer, OK, Fehler).
+
+#### Orchestrator-Fixes
+- **`src/lib/orchestrator/events.ts`** (GEÄNDERT): `bus`-Map an `globalThis.__kafinRunBus` gehängt — behebt fehlende SSE-Events in Next.js-Dev-Mode (separate Modul-Instanzen pro Route). Schreibt Pipeline-Logs zusätzlich in `data/logs/runs.jsonl`.
+- **`src/lib/orchestrator/pipeline.ts`** (GEÄNDERT): Gesamte `runPipeline()`-Funktion in try/catch eingewickelt (frühzeitige Fehler wie „Ollama nicht erreichbar" werden als SSE-Error-Event gesendet). **Extract + Sections laufen jetzt parallel** (Phase-2-Block mit `Promise.all`).
+- **`src/lib/orchestrator/steps.ts`** (GEÄNDERT): `resolveModels()` beachtet `getLLMConfig()`; bei DeepSeek wird `deepseek_model` aus DB genutzt. Section-Concurrency von 2 auf **7** erhöht.
+
+#### Performance-Optimierungen
+- **`src/lib/research/context.ts`** (GEÄNDERT): Global-Context 32 K → 18 K Zeichen, Block-Context 22 K → 12 K Zeichen. Schnellerer LLM-Prefill.
+- **`src/lib/llm/prompts.ts`** (GEÄNDERT): Rationale-Limit von „max 2 Sätze" auf **max 10 Wörter** reduziert → ~35 % weniger Output-Tokens pro Section-Call.
+
+### Behobene Bugs
+| Bug | Ursache | Fix |
+|---|---|---|
+| „Warte auf Start" (keine SSE-Events) | Next.js Dev-Mode: jede Route bekommt eigene Modul-Instanz → `bus`-Map nicht geteilt | `globalThis.__kafinRunBus` |
+| „fetch failed" nach ~305 s (Ollama) | undici `headersTimeout: 300 s` + Ollama `stream: false` → erste Headers kamen erst nach vollständiger Generierung | Ollama auf `stream: true` umgestellt |
+| Pipeline-Fehler ohne UI-Feedback | `resolveModels()` außerhalb try/catch → silent crash | Gesamte Pipeline-Funktion im try/catch |
+| Logs-Seite leer | `runs.jsonl` existierte nicht; `audit.jsonl`-Format passte nicht zur alten Anzeige | Logs-Seite neu geschrieben; `logRun()` schreibt in `runs.jsonl` |
+
+### Geschätzte Performance-Verbesserung (nächster Run)
+- **–50 % Gesamtzeit** durch paralleles Extract+Sections
+- **–30 % Prefill** durch kleineren Context
+- **–35 % Output-Tokens** durch kürzere Rationale
+
+### Verifiziert (Update 8)
+- `npx tsc --noEmit` ✅ (exit 0)
+
+---
+
 ## Aktueller Stand — 2026-05-20 (Update 7)
 
 **Phase:** 3.5 — Versionsvergleich, Watchlist-Notes editierbar, Reports-Liste mit Compare-Button.
@@ -109,6 +160,7 @@
 
 ## Changelog
 
+- **2026-05-22 (Update 8)** — DeepSeek-Provider-Support (`config.ts`, `deepseek.ts`), Settings-API + Einstellungsseite (Provider-Toggle, Test-Verbindung), Logs-Seite neu (runs.jsonl + audit.jsonl), SSE-Bus auf `globalThis` (Fix "warte auf Start"), Ollama `stream:true` (Fix undici headersTimeout), Pipeline parallel (Extract+Sections gleichzeitig), Context 32K→18K / 22K→12K, Rationale max 10 Wörter, Section-Concurrency 2→7. `tsc --noEmit` ✅
 - **2026-05-20 (Update 7)** — Versionsvergleich: `report-diff`-Lib + `/reports/compare/[a]/[b]`-Page (Score-Δ, Block-Δ, Indikator-Δ, Key-Metrics-Δ, Listen-Δ, Thesis vorher/nachher), Reports-Liste mit „vs. Vorgänger"-Button, Watchlist-Notes inline editierbar + Unpin. 23/23 Unit, 8/8 E2E, 18 Build-Routen.
 - **2026-05-20 (Update 6)** — Sidebar-Refactor (links, ohne Symbole), Watchlist-Pin-API + PinButton, Score-Indikator-Persistenz (`block_audits` in Report-JSON, Indikator-Tabelle im Dashboard), Playwright E2E-Smoke (8/8). Phase 3 abgeschlossen.
 - **2026-05-20 (Update 5)** — Export-Layer (PDF via Puppeteer, XLSX via ExcelJS, PPTX via PptxGenJS) + 3 API-Routen + ExportButtons im Dashboard. 16 Routen im Build, alles grün.

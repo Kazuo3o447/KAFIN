@@ -201,6 +201,49 @@ export default function ReportDashboardPage({
         </GlassCard>
       ) : null}
 
+      {report.red_flags.length > 0 ? (
+        <GlassCard variant="red" className="p-5">
+          <h2 className="text-sm uppercase tracking-wide text-red-400 mb-2">Red Flags</h2>
+          <ul className="space-y-1 text-sm">
+            {report.red_flags.map((flag, i) => (
+              <li key={i} className="text-red-200">• {flag}</li>
+            ))}
+          </ul>
+        </GlassCard>
+      ) : null}
+
+      {report.moat_assessment.rating !== "Unknown" ||
+      report.moat_assessment.evidence.length > 0 ||
+      report.moat_assessment.threats.length > 0 ? (
+        <GlassCard className="p-5">
+          <h2 className="text-sm uppercase tracking-wide text-secondary-500 mb-2">
+            Moat · {report.moat_assessment.rating}
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+            <div>
+              <h3 className="text-xs uppercase tracking-wide text-green-400 mb-2">Evidence</h3>
+              <ul className="space-y-1">
+                {report.moat_assessment.evidence.length ? (
+                  report.moat_assessment.evidence.map((item, i) => <li key={i}>• {item}</li>)
+                ) : (
+                  <li className="text-secondary-500">—</li>
+                )}
+              </ul>
+            </div>
+            <div>
+              <h3 className="text-xs uppercase tracking-wide text-amber-400 mb-2">Threats</h3>
+              <ul className="space-y-1">
+                {report.moat_assessment.threats.length ? (
+                  report.moat_assessment.threats.map((item, i) => <li key={i}>• {item}</li>)
+                ) : (
+                  <li className="text-secondary-500">—</li>
+                )}
+              </ul>
+            </div>
+          </div>
+        </GlassCard>
+      ) : null}
+
       {/* Catalysts / Open Questions / Falsification */}
       <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <GlassCard className="p-5">

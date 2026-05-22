@@ -2,18 +2,35 @@
 /**
  * Startseite — Ticker-Eingabe + Modell-Wahl, startet einen Run.
  */
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { GlassCard } from "@/components/GlassCard";
-import { ModelSelector } from "@/components/ModelSelector";
 import { showToast } from "@/components/Toast";
 
 export default function HomePage() {
   const router = useRouter();
   const [ticker, setTicker] = useState("");
-  const [model, setModel] = useState("");
   const [busy, setBusy] = useState(false);
+
+  const [provider, setProvider] = useState<"ollama" | "deepseek" | null>(null);
+  const [providerStatus, setProviderStatus] = useState<{ ok: boolean; message: string } | null>(null);
+
+  // Aktuellen LLM-Provider laden und sofort testen
+  useEffect(() => {
+    fetch("/api/settings?key=llm_provider")
+      .then((r) => r.json())
+      .then((d: { value: unknown }) => {
+        const p = d.value === "deepseek" ? "deepseek" : "ollama";
+        setProvider(p);
+        // Provider im Hintergrund testen
+        fetch("/api/settings/test-llm")
+          .then((r) => r.json())
+          .then((s: { ok: boolean; message: string }) => setProviderStatus(s))
+          .catch(() => {});
+      })
+      .catch(() => setProvider("ollama"));
+  }, []);
 
   async function start(e: React.FormEvent) {
     e.preventDefault();
@@ -25,7 +42,11 @@ export default function HomePage() {
     setBusy(true);
     try {
       const body: Record<string, unknown> = { ticker: t };
-      if (model) body.modelOverride = { extract: model, scoring: model, summary: model };
+      // Gespeichertes Ollama-Modell aus den Einstellungen verwenden
+      const savedModel = localStorage.getItem("kafin.defaultModel");
+      if (savedModel && provider !== "deepseek") {
+        body.modelOverride = { extract: savedModel, scoring: savedModel, summary: savedModel };
+      }
       const r = await fetch("/api/runs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -49,9 +70,37 @@ export default function HomePage() {
       <header>
         <h1 className="text-2xl font-semibold tracking-tight">Aktien-Research</h1>
         <p className="text-sm text-secondary-400 mt-1">
-          Lokale fundamentale Analyse mit Ollama. Eingabe Ticker → SSE-Progress → Audit-Dashboard.
+          Fundamentale Analyse mit{" "}
+          {provider === "deepseek" ? (
+            <span className="text-accent-400 font-medium">DeepSeek API</span>
+          ) : (
+            <span className="text-secondary-300 font-medium">Ollama (lokal)</span>
+          )}
+          . Eingabe Ticker → SSE-Progress → Audit-Dashboard.
         </p>
       </header>
+
+      {/* Provider-Statusbanner */}
+      {providerStatus && !providerStatus.ok && (
+        <div className="flex items-start gap-3 rounded-lg border border-red-800 bg-red-950/50 px-4 py-3 text-sm text-red-300">
+          <span className="text-base leading-none mt-0.5 shrink-0">✗</span>
+          <div>
+            <span className="font-medium">
+              {provider === "deepseek" ? "DeepSeek API" : "Ollama"} nicht erreichbar
+            </span>
+            <span className="text-red-400 ml-2">{providerStatus.message}</span>
+            <Link href="/settings" className="ml-3 underline underline-offset-2 hover:text-red-200">
+              Einstellungen →
+            </Link>
+          </div>
+        </div>
+      )}
+      {providerStatus && providerStatus.ok && (
+        <div className="flex items-center gap-2 text-xs text-secondary-500">
+          <span className="w-2 h-2 rounded-full bg-green-500 inline-block" />
+          {provider === "deepseek" ? "DeepSeek API" : "Ollama"} · {providerStatus.message}
+        </div>
+      )}
 
       <GlassCard className="p-6">
         <form onSubmit={start} className="flex flex-col md:flex-row md:items-end gap-4">
@@ -65,10 +114,6 @@ export default function HomePage() {
               className="mt-1 w-full bg-secondary-900 border border-secondary-700 rounded-md px-3 py-2 text-base font-mono focus:border-accent-500 outline-none"
               maxLength={10}
             />
-          </div>
-          <div>
-            <label className="text-xs uppercase tracking-wide text-secondary-500 block mb-1">Modell (optional)</label>
-            <ModelSelector value={model} onChange={setModel} />
           </div>
           <button
             type="submit"
@@ -99,7 +144,7 @@ export default function HomePage() {
           <GlassCard className="p-5 cursor-pointer">
             <div className="text-xs uppercase text-secondary-500">Audit</div>
             <div className="text-base font-medium mt-1">Logs</div>
-            <div className="text-xs text-secondary-500 mt-2">Tail von audit.jsonl</div>
+            <div className="text-xs text-secondary-500 mt-2">Pipeline-Logs & LLM-Audit</div>
           </GlassCard>
         </Link>
       </section>

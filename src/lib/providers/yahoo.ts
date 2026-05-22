@@ -3,10 +3,11 @@
  * Liefert: Quote, Summary (financialData, defaultKeyStatistics, summaryDetail), Earnings.
  * Klasse B (etablierte Finanz-API).
  */
-import yahooFinance from "yahoo-finance2";
+import YahooFinance from "yahoo-finance2";
 import type { DataProvider, ProviderContext, ProviderResult, ProviderFact } from "./types";
 
 // yahoo-finance2 v3 zeigt Notices; via setGlobalConfig stumm schalten
+const yahooFinance = new YahooFinance();
 try {
   (yahooFinance as unknown as { setGlobalConfig?: (cfg: object) => void }).setGlobalConfig?.({
     notifyRipHistorical: "silent",

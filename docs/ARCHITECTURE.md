@@ -8,34 +8,30 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  Browser (React 18, Tailwind, Chart.js)                          │
-│  Pages: Dashboard · Run · Reports · Watchlist · Settings · Logs  │
+│  Browser (React 18, Tailwind)                                    │
+│  Pages: Home · Run · Reports · Watchlist · Settings · Logs       │
 └──────────────────────────────────────────────────────────────────┘
                      │  HTTP (App Router) · SSE (Live-Log)
                      ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│  Next.js 14 (Node 20) – API Routes + Server Actions              │
+│  Next.js 14 (Node 20) – API Routes + React Server Components     │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────┐ │
-│  │  Orchestr│ │ Providers│ │  Scoring │ │ Storage  │ │ Export │ │
-│  │  ator    │ │ (Adapter)│ │ (deterministic)        │ │        │ │
+│  │ Orchestr.│ │ Providers│ │  Scoring │ │ Storage  │ │ Export │ │
+│  │ pipeline │ │ (Adapter)│ │ (det. TS)│ │ Drizzle  │ │        │ │
 │  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘ └───┬────┘ │
 │       │            │            │            │            │      │
 │       ▼            ▼            ▼            ▼            ▼      │
-│   Ollama       yfinance      Pure TS      Drizzle     puppeteer  │
-│   /api/tags    SEC EDGAR                  SQLite      pptxgenjs  │
-│   /api/chat    FMP / AV                   FS atomic   exceljs    │
-│                RSS Parser                                        │
+│  LLM-Router    yfinance      Pure TS      SQLite      pptxgenjs  │
+│  (config.ts)   SEC EDGAR                  FS atomic   exceljs    │
+│       │        FMP / AV                   audit.jsonl puppeteer  │
+│       ├─ Ollama RSS Parser                                       │
+│       └─ DeepSeek                                                │
 └──────────────────────────────────────────────────────────────────┘
                      │
                      ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│  Filesystem (Docker volume `./data`)                             │
-│  research.db · reports/ · raw/ · logs/audit.jsonl · cache/       │
-└──────────────────────────────────────────────────────────────────┘
-                     │
-                     ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  Ollama Container (separat, http://ollama:11434)                 │
+│  Filesystem (./data)                                             │
+│  research.db · raw/ · logs/audit.jsonl · logs/runs.jsonl         │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -166,39 +162,71 @@ kafin/
 ## 3. Datenfluss eines Research-Runs
 
 ```
-POST /api/runs { ticker, models?:{extract,scoring,summary} }
+POST /api/runs { ticker, modelOverride?:{extract,scoring,summary} }
    │
    ▼
-Orchestrator.start(runId = ulid())
+runPipeline(runId, ticker)  — alles in einem try/catch; Fehler → SSE error-Event
    │
-   ├─ 1. fetchBaseData()   ── yfinance, FMP/AV, EDGAR (Filings-Index)
-   │     emit("progress", 10%)  ── persists to data/raw/{T}/{runId}/baseData.json
+   ├─ Phase 1 (sequentiell):
+   │   ├─ 1. stepFetchBaseData()    ── Provider parallel: yfinance, FMP, EDGAR, RSS
+   │   │     emit("progress", 15%)
+   │   │
+   │   ├─ 2. stepDeriveMetrics()   ── deterministisch: Rule-of-40, CAGR, SBC%, etc.
+   │   │     emit("progress", 22%)
+   │   │
+   │   └─ 3. stepBuildContext()    ── Facts + Quellen-Snippets → context + blockContexts
+   │         emit("progress", 30%)
    │
-   ├─ 2. buildContext()    ── snippets + factsheet → Prompt-Inputs
-   │
-   ├─ 3. llm.extractFacts()  ── Ollama (extract model, temp 0.2)
-   │     → strict JSON, Zod-validate; persists prompts + responses
-   │     emit("progress", 35%)
-   │
-   ├─ 4. llm.answerSections() ── pro Block A–G eine Anfrage, parallel max=2
-   │     → Sub-Scores 0–10 + Begründung + Quelle (Pflicht)
+   ├─ Phase 2 (PARALLEL — größter Laufzeit-Gewinn):
+   │   ├─ 4a. stepExtractFacts()   ── LLM: key_metrics + identity aus globalem Context
+   │   │       model: modelExtract, temp: 0.1, context: max 18.000 Zeichen
+   │   └─ 4b. stepAnswerSections() ── LLM: Blöcke A–G, concurrency=7
+   │           model: modelScoring, temp: 0.2, context: max 12.000 Zeichen/Block
+   │           rationale: max 10 Wörter/Indikator
    │     emit("progress", 70%)
    │
-   ├─ 5. scoring.compute()    ── deterministisch in TS, Gewichte aus weights.ts
-   │     scoring.gate()       ── Hard-Blocker prüfen, Gate setzen
-   │     scoring.category()   ── Rocket / Quality Growth / ...
-   │
-   ├─ 6. llm.summarize()      ── Bull/Bear/Thesis (summary model, temp 0.4)
-   │     emit("progress", 90%)
-   │
-   ├─ 7. storage.persist()
-   │     - reports.writeJSON(reportSchema)
-   │     - reports.writeMarkdown(rendered)
-   │     - db.insert(reports, run_metadata)
-   │     - audit.append(run summary)
-   │
-   └─ emit("done", 100%, reportId)
+   └─ Phase 3 (sequentiell):
+       ├─ 5. stepComputeScoreAndGate() ── deterministisch: Gewichte → Score 0–100,
+       │     emit("progress", 80%)        Gate Green/Yellow/Red, Hard-Blocker
+       │
+       ├─ 6. stepSummarize()       ── LLM: Bull/Bear/Thesis/Catalysts
+       │     emit("progress", 92%)    model: modelSummary, temp: 0.4
+       │
+       └─ 7. stepPersist()         ── atomar: MD+JSON schreiben, DB-Row, Audit
+             emit("done", 100%, reportId)
 ```
+
+### LLM-Routing (seit Update 8)
+
+`chatJSON()` in `ollama.ts` liest via `getLLMConfig()` den aktiven Provider aus der DB:
+
+```
+chatJSON(opts)
+   │
+   ├─ getLLMConfig().provider === "deepseek"
+   │     └─ chatJSONDeepSeek(opts, apiKey, model)
+   │         POST https://api.deepseek.com/chat/completions
+   │         response_format: { type: "json_object" }
+   │
+   └─ provider === "ollama"
+         └─ ollama.chat({ ...opts, stream: true })
+             akkumuliert Tokens aus AsyncIterable
+             (stream:true → kein undici headersTimeout)
+```
+
+### SSE-Event-Bus
+
+```
+ensureRunBus(runId)  — globalThis.__kafinRunBus (Map, geteilt über alle Route-Module)
+   │
+   ├─ emitRun(runId, event, data)   ── buffert + emitter.emit()
+   ├─ getBuffer(runId)              ── replay bei Late-Connect
+   └─ isDone(runId)                 ── stream sofort schließen wenn bereits fertig
+```
+
+> **Wichtig:** `bus` hängt an `globalThis.__kafinRunBus` — notwendig weil Next.js-Dev-Mode jede Route-Datei in einer eigenen Modul-Instanz evaluiert. Ohne globalThis würden POST `/api/runs` und GET `/api/runs/[id]/stream` verschiedene Map-Instanzen sehen → leerer Buffer.
+
+---
 
 **Cancel:** `DELETE /api/runs/:id` setzt Abort-Flag, alle In-Flight-`fetch`/Ollama-Streams werden via `AbortController` abgebrochen. Teil-Artefakte bleiben unter `raw/`.
 

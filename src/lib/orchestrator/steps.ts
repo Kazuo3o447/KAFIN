@@ -18,6 +18,7 @@ import { fetchAllFacts } from "@/lib/providers";
 import type { ProviderResult, ProviderFact, RawArtifact } from "@/lib/providers/types";
 import { atomicWrite } from "@/lib/utils/atomic-write";
 import { chatJSON, pickDefaultModel } from "@/lib/llm/ollama";
+import { getLLMConfig } from "@/lib/llm/config";
 import {
   EXTRACTOR_SYSTEM,
   EXTRACTOR_USER,
@@ -31,6 +32,10 @@ import {
 import { computeScore, type IndicatorScore } from "@/lib/scoring/score";
 import { computeGate, canHandoffToTradeEngine, type Category } from "@/lib/scoring/gate";
 import type { BlockKey } from "@/lib/scoring/weights";
+import { buildResearchContext } from "@/lib/research/context";
+import { deriveKeyMetrics, mergeDeterministicMetrics } from "@/lib/research/derived-metrics";
+import { validateBlockSources } from "@/lib/research/source-validation";
+import { buildMoatAssessment, deriveResearchSignals } from "@/lib/research/signals";
 import {
   ReportSchema,
   type Report,
@@ -53,7 +58,10 @@ export interface PipelineState {
   rawDir: string;
   providerResults?: ProviderResult[];
   facts?: ProviderFact[];
+  derivedMetrics?: Partial<KeyMetrics>;
   context?: string;
+  blockContexts?: Record<BlockId, string>;
+  sourceEvidence?: Map<number, string>;
   /** Numerischer Index (1-basiert) → Source-Eintrag */
   sourceMap?: Map<number, { url: string; title?: string; klass: string }>;
   identity?: {
@@ -71,6 +79,7 @@ export interface PipelineState {
   confidence?: "low" | "medium" | "high";
   gate?: "Green" | "Yellow" | "Red";
   hardBlockers?: string[];
+  redFlags?: string[];
   thesis?: {
     thesis_summary: string;
     bull_case: string[];
@@ -86,7 +95,12 @@ export interface BlockResult {
   block: BlockId;
   indicators: Array<{ name: string; score: number | null; rationale: string; sourceIdx: number | null }>;
   confidence: "low" | "medium" | "high";
+  red_flags: string[];
   hard_blockers: string[];
+  invalid_source_refs?: string[];
+  moat_rating?: "Wide" | "Narrow" | "Emerging" | "No Moat" | "Negative Trend" | "Unknown" | null;
+  moat_evidence?: string[];
+  moat_threats?: string[];
 }
 
 // -----------------------------------------------------------
@@ -116,39 +130,37 @@ export async function stepFetchBaseData(state: PipelineState): Promise<void> {
 }
 
 // -----------------------------------------------------------
-// Step 2: buildContext
+// Step 2: deriveMetrics
+// -----------------------------------------------------------
+export async function stepDeriveMetrics(state: PipelineState): Promise<void> {
+  const result = deriveKeyMetrics(state.ticker, state.runDate, state.facts ?? []);
+  state.derivedMetrics = result.metrics;
+  if (result.facts.length > 0) {
+    state.facts = [...(state.facts ?? []), ...result.facts];
+  }
+  logRun(
+    state.runId,
+    "info",
+    `[metrics] derived ${Object.keys(result.metrics).length} deterministic key metrics`,
+  );
+}
+
+// -----------------------------------------------------------
+// Step 3: buildContext
 // -----------------------------------------------------------
 export async function stepBuildContext(state: PipelineState): Promise<void> {
   const facts = state.facts ?? [];
-  // Source-Map: dedupe über url
-  const sourceMap = new Map<number, { url: string; title?: string; klass: string }>();
-  const urlToIdx = new Map<string, number>();
-  let idx = 1;
-  for (const f of facts) {
-    if (!urlToIdx.has(f.url)) {
-      urlToIdx.set(f.url, idx);
-      sourceMap.set(idx, { url: f.url, title: f.title, klass: f.klass });
-      idx++;
-    }
-  }
-  state.sourceMap = sourceMap;
-
-  const lines: string[] = [];
-  lines.push("# QUELLEN");
-  for (const [i, src] of sourceMap.entries()) {
-    lines.push(`[${i}] (${src.klass}) ${src.title ?? ""} — ${src.url}`);
-  }
-  lines.push("\n# FAKTEN");
-  for (const f of facts) {
-    const sIdx = urlToIdx.get(f.url) ?? 0;
-    const valStr =
-      typeof f.value === "object"
-        ? JSON.stringify(f.value).substring(0, 800)
-        : String(f.value).substring(0, 400);
-    lines.push(`- [${sIdx}] ${f.field}: ${valStr}${f.asOf ? ` (asOf=${f.asOf})` : ""}`);
-  }
-  state.context = lines.join("\n").substring(0, 60_000);
-  logRun(state.runId, "info", `[context] ${sourceMap.size} Quellen, ${facts.length} Fakten`);
+  const blockIds = SECTION_BLOCKS.map((b) => b.id) as BlockKey[];
+  const researchContext = buildResearchContext(facts, blockIds);
+  state.sourceMap = researchContext.sourceMap;
+  state.context = researchContext.context;
+  state.blockContexts = researchContext.blockContexts as Record<BlockId, string>;
+  state.sourceEvidence = researchContext.sourceEvidence;
+  logRun(
+    state.runId,
+    "info",
+    `[context] ${researchContext.sourceMap.size} Quellen, ${facts.length} Fakten, blockweise aufgebaut`,
+  );
 }
 
 // -----------------------------------------------------------
@@ -198,7 +210,7 @@ export async function stepExtractFacts(state: PipelineState): Promise<void> {
     ev_gross_profit: data.key_metrics?.ev_gross_profit ?? null,
     peg: data.key_metrics?.peg ?? null,
   });
-  state.keyMetrics = km;
+  state.keyMetrics = mergeDeterministicMetrics(km, state.derivedMetrics);
 }
 
 // -----------------------------------------------------------
@@ -222,18 +234,59 @@ async function runWithConcurrency<T, R>(
   return results;
 }
 
+function clampScore(score: unknown): number | null {
+  if (typeof score !== "number" || !Number.isFinite(score)) return null;
+  return Math.max(0, Math.min(10, score));
+}
+
+function sanitizeBlockResult(block: (typeof SECTION_BLOCKS)[number], data: Partial<BlockResult>): BlockResult {
+  return {
+    block: block.id,
+    indicators: Array.isArray(data.indicators)
+      ? data.indicators.map((i) => ({
+          name: String(i.name ?? ""),
+          score: clampScore(i.score),
+          rationale: String(i.rationale ?? ""),
+          sourceIdx: typeof i.sourceIdx === "number" && Number.isInteger(i.sourceIdx) ? i.sourceIdx : null,
+        }))
+      : [],
+    confidence: data.confidence === "low" || data.confidence === "high" ? data.confidence : "medium",
+    red_flags: Array.isArray(data.red_flags) ? data.red_flags.map(String) : [],
+    hard_blockers: Array.isArray(data.hard_blockers) ? data.hard_blockers.map(String) : [],
+    moat_rating: data.moat_rating ?? null,
+    moat_evidence: Array.isArray(data.moat_evidence) ? data.moat_evidence.map(String) : [],
+    moat_threats: Array.isArray(data.moat_threats) ? data.moat_threats.map(String) : [],
+  };
+}
+
 export async function stepAnswerSections(state: PipelineState): Promise<void> {
-  const blockResults = await runWithConcurrency(SECTION_BLOCKS as unknown as Array<typeof SECTION_BLOCKS[number]>, 2, async (block) => {
+  const provider = getLLMConfig().provider;
+  // Ollama: single-flight (stabil), DeepSeek: höhere Parallelität.
+  const sectionConcurrency = provider === "ollama" ? 1 : 7;
+  const blockResults = await runWithConcurrency(SECTION_BLOCKS as unknown as Array<typeof SECTION_BLOCKS[number]>, sectionConcurrency, async (block) => {
     const { data } = await chatJSON<BlockResult>({
       runId: state.runId,
       step: `section_${block.id}`,
       model: state.modelScoring,
       system: SECTION_SYSTEM,
-      user: SECTION_USER({ id: block.id, label: block.label }, state.ticker, state.context ?? ""),
+      user: SECTION_USER(
+        { id: block.id, label: block.label },
+        state.ticker,
+        state.blockContexts?.[block.id] ?? state.context ?? "",
+      ),
       temperature: 0.2,
       artifactsDir: state.rawDir,
     });
-    return data;
+    const sanitized = sanitizeBlockResult(block, data);
+    const checked = validateBlockSources(sanitized, state.sourceEvidence ?? new Map());
+    if (checked.invalid_source_refs.length > 0) {
+      logRun(
+        state.runId,
+        "warn",
+        `[sources] ${block.id}: ${checked.invalid_source_refs.length} unsichere Referenzen entfernt`,
+      );
+    }
+    return checked;
   });
   const map = {} as Record<BlockId, BlockResult>;
   for (const r of blockResults) map[r.block] = r;
@@ -246,6 +299,7 @@ export async function stepAnswerSections(state: PipelineState): Promise<void> {
 export async function stepComputeScoreAndGate(state: PipelineState): Promise<void> {
   const blocks = {} as Record<BlockKey, IndicatorScore[]>;
   const allHardBlockers: string[] = [];
+  const allRedFlags: string[] = [];
   const confidences: string[] = [];
 
   for (const b of SECTION_BLOCKS) {
@@ -257,6 +311,7 @@ export async function stepComputeScoreAndGate(state: PipelineState): Promise<voi
       sourceIdx: i.sourceIdx != null ? [i.sourceIdx] : undefined,
     }));
     if (r?.hard_blockers) allHardBlockers.push(...r.hard_blockers);
+    if (r?.red_flags) allRedFlags.push(...r.red_flags);
     if (r?.confidence) confidences.push(r.confidence);
   }
 
@@ -271,15 +326,27 @@ export async function stepComputeScoreAndGate(state: PipelineState): Promise<voi
   // Confidence aggregieren: Mehrheit / lowest-wins
   const lowCount = confidences.filter((c) => c === "low").length;
   const highCount = confidences.filter((c) => c === "high").length;
-  state.confidence = lowCount > highCount ? "low" : highCount >= confidences.length / 2 ? "high" : "medium";
+  state.confidence =
+    confidences.length === 0
+      ? "low"
+      : lowCount > highCount
+        ? "low"
+        : highCount >= confidences.length / 2
+          ? "high"
+          : "medium";
 
-  // Category Heuristik (research.md §20) — vereinfacht für MVP
-  let category: Category = "Transitional";
-  if (state.hardBlockers.length > 0) category = "Too Hard";
-  else if (state.scoreTotal >= 80 && state.confidence !== "low") category = "Rocket";
-  else if (state.scoreTotal >= 65) category = "Quality Growth";
-  else if (state.scoreTotal < 40) category = "Ignore";
-  state.category = category;
+  // Category uses research.md category traps plus block-specific signals.
+  const signals = deriveResearchSignals({
+    scoreTotal: state.scoreTotal,
+    coverage: state.coverage,
+    confidence: state.confidence,
+    keyMetrics: state.keyMetrics,
+    scoreBreakdown: state.scoreBreakdown,
+    hardBlockers: state.hardBlockers,
+  });
+  state.category = signals.category;
+  state.hardBlockers = signals.hardBlockers;
+  state.redFlags = Array.from(new Set([...allRedFlags, ...signals.redFlags]));
 
   state.gate = computeGate({
     scoreTotal: state.scoreTotal,
@@ -360,6 +427,7 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
       })),
       confidence: r?.confidence ?? "medium",
       hard_blockers: r?.hard_blockers ?? [],
+      red_flags: r?.red_flags ?? [],
     };
   });
 
@@ -380,9 +448,9 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
     key_metrics: state.keyMetrics,
     score_breakdown: breakdown,
     block_audits: blockAudits,
-    moat_assessment: { rating: "Unknown", sources: [], evidence: [], threats: [] },
+    moat_assessment: buildMoatAssessment(state.blockResults?.quality_moat, state.sourceMap ?? new Map()),
     catalysts: state.thesis?.catalysts ?? [],
-    red_flags: [],
+    red_flags: state.redFlags ?? [],
     hard_blockers: state.hardBlockers ?? [],
     open_questions: state.thesis?.open_questions ?? [],
     falsification_tests: state.thesis?.falsification_tests ?? [],
@@ -469,6 +537,18 @@ function renderMarkdown(r: Report): string {
     lines.push("### Hard Blockers");
     r.hard_blockers.forEach((b) => lines.push(`- ⛔ ${b}`));
   }
+  if (r.red_flags.length > 0) {
+    lines.push("");
+    lines.push("### Red Flags");
+    r.red_flags.forEach((b) => lines.push(`- ${b}`));
+  }
+  if (r.moat_assessment.rating !== "Unknown" || r.moat_assessment.evidence.length > 0) {
+    lines.push("");
+    lines.push("### Moat");
+    lines.push(`- Rating: ${r.moat_assessment.rating}`);
+    r.moat_assessment.evidence.forEach((e) => lines.push(`- Evidence: ${e}`));
+    r.moat_assessment.threats.forEach((t) => lines.push(`- Threat: ${t}`));
+  }
   lines.push("");
   lines.push("## Score-Breakdown");
   for (const [k, v] of Object.entries(r.score_breakdown)) {
@@ -483,6 +563,12 @@ function renderMarkdown(r: Report): string {
 }
 
 export async function resolveModels(): Promise<{ extract: string; scoring: string; summary: string }> {
+  const { getLLMConfig } = await import("@/lib/llm/config");
+  const cfg = getLLMConfig();
+  if (cfg.provider === "deepseek") {
+    const m = cfg.deepseekModel || "deepseek-chat";
+    return { extract: m, scoring: m, summary: m };
+  }
   const m = await pickDefaultModel();
   return { extract: m, scoring: m, summary: m };
 }

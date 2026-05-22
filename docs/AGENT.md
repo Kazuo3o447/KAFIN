@@ -6,7 +6,7 @@
 
 ## 1. Geltungsbereich
 
-Die App nutzt ein **lokales LLM via Ollama**. Es gibt mehrere Agenten-Rollen, die nacheinander in einer Pipeline laufen. Jede Rolle hat: festen Prompt, festes Output-Schema (Zod), Temperatur, Modell-Default. Alle Aufrufe werden in `data/logs/audit.jsonl` protokolliert.
+Die App unterstützt zwei LLM-Provider: **Ollama** (lokal) und **DeepSeek** (Cloud-API). Der aktive Provider wird in den Einstellungen konfiguriert und per `src/lib/llm/config.ts` gelesen. Alle Aufrufe laufen durch `chatJSON()` in `ollama.ts`, das transparent routet. Alle Calls werden in `data/logs/audit.jsonl` protokolliert.
 
 Fachliche Grundlage: [research.md](../research.md), insbesondere §7 (Evidenzklassen), §9–§20 (Scoring/Gate), §21 (Output-Schema), §22 (verbindlicher Agenten-Prompt).
 
@@ -14,10 +14,10 @@ Fachliche Grundlage: [research.md](../research.md), insbesondere §7 (Evidenzkla
 
 ## 2. Modell-Auswahl
 
-- Die App ruft beim Start `GET {OLLAMA_BASE_URL}/api/tags` und cached die Liste 30 s.
-- UI zeigt Dropdown in `Settings` (globale Defaults) **und** im `Run`-Dialog (per-Step Override).
-- Empfohlene Defaults (anpassbar): jedes instruct-tuned Modell ≥ 7B mit JSON-Mode-Support, z. B. `llama3.1:8b-instruct`, `qwen2.5:14b-instruct`, `mistral-nemo`, `gpt-oss:20b`.
-- **Pflicht:** Modell muss `format=json` zuverlässig respektieren. Bei wiederholten Schema-Fehlern wird das Modell im Log markiert und im UI gewarnt.
+- Provider und Modell werden **ausschließlich in den Einstellungen** (`/settings`) konfiguriert — kein Override im Run-Dialog.
+- **Ollama:** Ruft `GET {OLLAMA_BASE_URL}/api/tags`, cached 30 s, filtert Vision/Embedding-Modelle heraus, nimmt das erste Text-LLM als Default.
+- **DeepSeek:** API-Key und Modellname (`deepseek_model`, Default `deepseek-chat`) aus Settings-DB.
+- `src/lib/llm/config.ts` liest Provider-Config aus DB mit 10 s-Cache. Änderungen in Settings invalidieren den Cache sofort.
 
 ---
 
@@ -35,17 +35,18 @@ Fachliche Grundlage: [research.md](../research.md), insbesondere §7 (Evidenzkla
 
 - **Output-Schema (Zod):** Teilmenge von `research.md` §21 — `key_metrics` + `source_list` + `confidence_per_metric`.
 
-### 3.2 Section-Answerer (Step 4, pro Block A–G)
+### 3.2 Section-Answerer (Step 4b, parallel zu 4a)
 
-**Zweck:** Pro Score-Block die Indikatoren bewerten (0–10 je Indikator) und je eine kurze Begründung mit Quelle liefern. **Vergibt keine Block-Summen** — die Gewichtung passiert deterministisch im Backend.
+**Zweck:** Pro Score-Block die Indikatoren bewerten (0–10 je Indikator) und eine kurze Begründung mit Quelle liefern. **Vergibt keine Block-Summen** — Gewichtung deterministisch im Backend.
 
 - **Modell:** `DEFAULT_MODEL_SCORING`
 - **Temperature:** `0.2`
 - **Format:** `json` (strict)
+- **Rationale:** max 10 Wörter pro Indikator (Performance-Optimierung: kürzere Outputs)
 - **System-Prompt-Kern:**
-  > Du bewertest Indikatoren nach `research.md`. Für jeden Indikator: Wert (0–10), 1–3 Sätze Begründung, Quellen-Index. Keine Block-Summen. Markiere Red-Flags. Wenn Datenlage `unknown`, vergib `null` und erkläre die fehlende Datenlage.
+  > Du bewertest Indikatoren nach `research.md`. Für jeden Indikator: Wert (0–10), max 10 Wörter Begründung, Quellen-Index. Keine Block-Summen. Markiere Red-Flags.
 
-- **Parallelität:** max. 2 Blöcke gleichzeitig (Ollama-Auslastung).
+- **Parallelität:** Alle 7 Blöcke gleichzeitig (concurrency=7); Ollama queued intern sequentiell. Extract (Step 4a) läuft gleichzeitig mit allen Sections.
 
 ### 3.3 Scorer (deterministisch, **kein** LLM)
 

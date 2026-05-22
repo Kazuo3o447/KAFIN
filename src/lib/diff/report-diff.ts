@@ -4,6 +4,7 @@
  */
 import type { Report, BlockAudit } from "@/lib/schemas/report";
 import type { BlockKey } from "@/lib/scoring/weights";
+import { RESEARCH_BLOCK_RUBRIC } from "@/lib/research/rubric";
 
 export interface NumberDelta {
   key: string;
@@ -91,6 +92,33 @@ function diffList(before: readonly string[], after: readonly string[]): ListDelt
   return { added, removed, unchanged };
 }
 
+function normalizeIndicatorName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+}
+
+function canonicalIndicatorName(block: BlockKey, name: string): string {
+  const normalized = normalizeIndicatorName(name);
+  const rubric = RESEARCH_BLOCK_RUBRIC[block];
+  for (const indicator of rubric.indicators) {
+    const candidates = [indicator.key, indicator.label, ...(indicator.aliases ?? [])].map(normalizeIndicatorName);
+    if (candidates.includes(normalized)) return indicator.key;
+  }
+  for (const indicator of rubric.indicators) {
+    const candidates = [indicator.key, indicator.label, ...(indicator.aliases ?? [])].map(normalizeIndicatorName);
+    if (candidates.some((candidate) => candidate && normalized.includes(candidate))) return indicator.key;
+  }
+  return normalized || name;
+}
+
+function indicatorMap(audit: BlockAudit | undefined): Map<string, BlockAudit["indicators"][number]> {
+  const out = new Map<string, BlockAudit["indicators"][number]>();
+  if (!audit) return out;
+  for (const indicator of audit.indicators) {
+    out.set(canonicalIndicatorName(audit.block, indicator.name), indicator);
+  }
+  return out;
+}
+
 function diffIndicators(a: BlockAudit[], b: BlockAudit[]): IndicatorDelta[] {
   const result: IndicatorDelta[] = [];
   const allBlocks = new Set<BlockKey>();
@@ -100,12 +128,12 @@ function diffIndicators(a: BlockAudit[], b: BlockAudit[]): IndicatorDelta[] {
   for (const block of allBlocks) {
     const aud = a.find((x) => x.block === block);
     const bud = b.find((x) => x.block === block);
-    const names = new Set<string>();
-    aud?.indicators.forEach((i) => names.add(i.name));
-    bud?.indicators.forEach((i) => names.add(i.name));
+    const aiByName = indicatorMap(aud);
+    const biByName = indicatorMap(bud);
+    const names = new Set<string>([...aiByName.keys(), ...biByName.keys()]);
     for (const name of names) {
-      const ai = aud?.indicators.find((i) => i.name === name);
-      const bi = bud?.indicators.find((i) => i.name === name);
+      const ai = aiByName.get(name);
+      const bi = biByName.get(name);
       const before = ai?.score ?? null;
       const after = bi?.score ?? null;
       const delta = before !== null && after !== null ? after - before : null;
