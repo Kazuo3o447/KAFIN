@@ -33,8 +33,6 @@ const RED_CATEGORIES: Category[] = [
 export function computeGate(input: GateInput): Gate {
   if (input.hardBlockers.length > 0) return "Red";
   if (RED_CATEGORIES.includes(input.category)) return "Red";
-  if (input.confidence === "low") return "Red";
-  if (input.coverage < 0.4) return "Red";
 
   if (input.scoreTotal >= 70) return "Green";
   if (input.scoreTotal >= 55) return "Yellow";

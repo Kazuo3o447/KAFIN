@@ -11,13 +11,11 @@
  * Wir lösen numerisch nach g.
  */
 
-import { THRESHOLDS } from "./thresholds";
+import { classifyImpliedGrowth, type ImpliedGrowthClass } from "./reverse-dcf-classification";
+import { DCF_ASSUMPTIONS } from "@/lib/research/assumptions";
 
 export type PriceClassification =
-  | "cheap"          // implied g <= conservative (8%)
-  | "fair"           // implied g in (8%, 15%]
-  | "ambitious"      // implied g in (15%, 25%]
-  | "speculative"    // implied g > 25%
+  | ImpliedGrowthClass
   | "unknown";
 
 export interface ReverseDCFResult {
@@ -60,8 +58,9 @@ export function computeReverseDCF(
   enterpriseValue: number | null,
   fcfBase: number | null,
   wacc: number | null,
-  years = 10,
-  terminalGrowth = 0.03,
+  years: number = DCF_ASSUMPTIONS.horizonYears,
+  terminalGrowth: number = DCF_ASSUMPTIONS.terminalGrowth,
+  framework: string = "general_equity",
 ): ReverseDCFResult {
   const inputs = { enterpriseValue, fcfBase, wacc: wacc ?? null, years };
 
@@ -77,18 +76,18 @@ export function computeReverseDCF(
   }
 
   // Bisection: find g in [terminalGrowth, wacc - 0.001] such that DCF(g) = EV
-  let lo = terminalGrowth;
+  let lo: number = terminalGrowth;
   let hi = wacc - 0.001;
 
   // Edge case: if even at minimum growth the DCF exceeds EV → cheap
   const dcfAtLo = computeDCFValue(fcfBase, wacc, lo, years, terminalGrowth);
   if (dcfAtLo !== null && dcfAtLo >= enterpriseValue) {
-    return { impliedGrowthRate: lo, classification: "cheap", inputs };
+    return { impliedGrowthRate: lo, classification: "conservative", inputs };
   }
   // If at max growth DCF is still below EV → extremely speculative
   const dcfAtHi = computeDCFValue(fcfBase, wacc, hi, years, terminalGrowth);
   if (dcfAtHi === null || dcfAtHi < enterpriseValue) {
-    return { impliedGrowthRate: hi, classification: "speculative", inputs };
+    return { impliedGrowthRate: hi, classification: "extreme", inputs };
   }
 
   // Bisection loop
@@ -106,11 +105,7 @@ export function computeReverseDCF(
 
   const impliedGrowthRate = (lo + hi) / 2;
 
-  let classification: PriceClassification;
-  if (impliedGrowthRate <= THRESHOLDS.reverse_dcf_conservative) classification = "cheap";
-  else if (impliedGrowthRate <= THRESHOLDS.reverse_dcf_fair) classification = "fair";
-  else if (impliedGrowthRate <= THRESHOLDS.reverse_dcf_ambitious) classification = "ambitious";
-  else classification = "speculative";
+  const classification: PriceClassification = classifyImpliedGrowth(impliedGrowthRate, framework);
 
   return {
     impliedGrowthRate: Number(impliedGrowthRate.toFixed(4)),

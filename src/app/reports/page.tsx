@@ -1,20 +1,14 @@
 /**
- * Reports-Liste – server-side aus DB. Inkl. "Vergleichen mit Vorgänger"-Button,
- * wenn ein älterer Report desselben Tickers existiert.
+ * Reports-Liste – server-side aus DB, mit Mehrfachauswahl und zentralen Aktionen.
  */
 import Link from "next/link";
-import { db, schema } from "@/lib/storage/db";
 import { desc } from "drizzle-orm";
+import { db, schema } from "@/lib/storage/db";
 import { GlassCard } from "@/components/GlassCard";
+import { ReportsBulkActionsList } from "@/components/ReportsBulkActionsList";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-
-const GATE_BADGE: Record<string, string> = {
-  Green: "bg-green-700/20 text-green-300 border-green-700/40",
-  Yellow: "bg-amber-700/20 text-amber-300 border-amber-700/40",
-  Red: "bg-red-700/20 text-red-300 border-red-700/40",
-};
 
 export default function ReportsPage() {
   const rows = db
@@ -24,7 +18,9 @@ export default function ReportsPage() {
     .limit(200)
     .all();
 
-  // Vorgänger pro Report: chronologisch (älter → neuer) je Ticker
+  const watchlistItems = db.select().from(schema.watchlist).all();
+  const pinnedTickerSet = new Set(watchlistItems.map((w) => w.ticker.toUpperCase()));
+
   const prevByReport = new Map<string, string>();
   const byTicker = new Map<string, typeof rows>();
   for (const r of rows) {
@@ -42,10 +38,10 @@ export default function ReportsPage() {
 
   return (
     <main className="mx-auto max-w-6xl px-6 py-8 space-y-6">
-      <header>
+      <header className="space-y-1">
         <h1 className="text-2xl font-semibold tracking-tight">Reports</h1>
         <p className="text-sm text-secondary-400 mt-1">
-          {rows.length === 0 ? "Noch keine Reports vorhanden." : `${rows.length} Audit(s) gespeichert.`}
+          {rows.length === 0 ? "Noch keine Reports vorhanden." : `${rows.length} Reports gespeichert.`}
         </p>
       </header>
 
@@ -54,49 +50,21 @@ export default function ReportsPage() {
           Starte deinen ersten Research-Run auf der <Link href="/" className="text-accent-400 underline">Startseite</Link>.
         </GlassCard>
       ) : (
-        <ul className="space-y-3">
-          {rows.map((r) => {
-            const prevId = prevByReport.get(r.id);
-            return (
-              <li key={r.id}>
-                <GlassCard className="p-4 flex items-center gap-4">
-                  <Link href={`/reports/${r.id}`} className="font-mono text-lg text-accent-400 w-20 hover:underline">
-                    {r.ticker}
-                  </Link>
-                  <Link href={`/reports/${r.id}`} className="flex-1 min-w-0 hover:opacity-80">
-                    <div className="text-sm font-medium truncate">
-                      {r.companyName || "—"}{" "}
-                      <span className="text-secondary-500">· {r.researchDate}</span>
-                    </div>
-                    <div className="text-xs text-secondary-500 mt-0.5">
-                      {r.category ?? "—"} · confidence {r.confidence ?? "—"}
-                    </div>
-                  </Link>
-                  <Link href={`/reports/${r.id}`} className="text-right hover:opacity-80">
-                    <div className="text-2xl font-semibold">{r.scoreTotal ?? 0}</div>
-                    <div className="text-[10px] uppercase text-secondary-500">/ 100</div>
-                  </Link>
-                  <span
-                    className={`text-xs uppercase tracking-wide px-2 py-1 rounded border ${
-                      GATE_BADGE[r.gate ?? ""] ?? "border-secondary-700 text-secondary-400"
-                    }`}
-                  >
-                    {r.gate ?? "—"}
-                  </span>
-                  {prevId ? (
-                    <Link
-                      href={`/reports/compare/${prevId}/${r.id}`}
-                      className="px-3 py-1.5 text-xs border border-secondary-700 hover:border-accent-500 rounded-md whitespace-nowrap"
-                      title="Mit Vorgänger-Report vergleichen"
-                    >
-                      vs. Vorgänger
-                    </Link>
-                  ) : null}
-                </GlassCard>
-              </li>
-            );
-          })}
-        </ul>
+        <ReportsBulkActionsList
+          rows={rows.map((r) => ({
+            id: r.id,
+            ticker: r.ticker,
+            companyName: r.companyName,
+            researchDate: r.researchDate,
+            category: r.category,
+            confidence: r.confidence,
+            scoreTotal: r.scoreTotal,
+            gate: r.gate,
+            createdAt: r.createdAt,
+          }))}
+          prevByReport={Object.fromEntries(prevByReport.entries())}
+          initiallyPinnedTickers={Array.from(pinnedTickerSet)}
+        />
       )}
     </main>
   );

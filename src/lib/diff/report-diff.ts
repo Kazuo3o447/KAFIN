@@ -65,8 +65,9 @@ const BLOCK_MAX: Record<BlockKey, number> = {
   quality_moat: 18,
   valuation: 14,
   capital_discipline_dilution: 12,
-  catalysts_revisions_sentiment: 12,
-  risk_fragility: 12,
+  catalysts_revisions_sentiment: 8,
+  ownership_smart_money: 8,
+  risk_fragility: 8,
 };
 
 function diffNumber(before: number | null | undefined, after: number | null | undefined) {
@@ -184,7 +185,7 @@ export function diffReports(a: DiffInput, b: DiffInput): ReportDiff {
       a: {
         id: a.id,
         date: a.report.research_date,
-        score: a.report.growth_research_score,
+        score: a.report.growth_research_score ?? 0,
         gate: a.report.gate,
         category: a.report.category,
         confidence: a.report.confidence,
@@ -192,12 +193,12 @@ export function diffReports(a: DiffInput, b: DiffInput): ReportDiff {
       b: {
         id: b.id,
         date: b.report.research_date,
-        score: b.report.growth_research_score,
+        score: b.report.growth_research_score ?? 0,
         gate: b.report.gate,
         category: b.report.category,
         confidence: b.report.confidence,
       },
-      scoreDelta: Number((b.report.growth_research_score - a.report.growth_research_score).toFixed(2)),
+      scoreDelta: Number(((b.report.growth_research_score ?? 0) - (a.report.growth_research_score ?? 0)).toFixed(2)),
       gateChanged: a.report.gate !== b.report.gate,
       categoryChanged: a.report.category !== b.report.category,
       confidenceChanged: a.report.confidence !== b.report.confidence,

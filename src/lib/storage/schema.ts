@@ -34,6 +34,26 @@ export const reports = sqliteTable(
   }),
 );
 
+export const scoreHistory = sqliteTable(
+  "score_history",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    reportId: text("report_id").notNull().unique(),
+    ticker: text("ticker").notNull(),
+    researchDate: text("research_date").notNull(),
+    scoreTotal: integer("score_total").notNull(),
+    gate: text("gate").notNull(),
+    confidence: text("confidence").notNull(),
+    createdAt: integer("created_at").notNull(),
+    deltaFromPrevious: integer("delta_from_previous"),
+    trend: text("trend").notNull(),
+  },
+  (t) => ({
+    tickerDateIdx: index("score_history_ticker_date_idx").on(t.ticker, t.researchDate),
+    tickerIdx: index("score_history_ticker_idx").on(t.ticker),
+  }),
+);
+
 export const runs = sqliteTable(
   "runs",
   {

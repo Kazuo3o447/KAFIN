@@ -25,7 +25,7 @@ export async function renderReportXlsx(report: Report): Promise<Buffer> {
     ["Research-Datum", report.research_date],
     ["Kategorie", report.category],
     ["Gate", report.gate],
-    ["Score", report.growth_research_score],
+    ["Score", report.growth_research_score ?? "n/a"],
     ["Confidence", report.confidence],
     ["Handoff to Trade Engine", report.handoff_to_trade_engine],
     ["Thesis", report.thesis_summary],

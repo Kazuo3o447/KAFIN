@@ -7,8 +7,9 @@ export const BLOCK_WEIGHTS = {
   quality_moat: 18,
   valuation: 14,
   capital_discipline_dilution: 12,
-  catalysts_revisions_sentiment: 12,
-  risk_fragility: 12,
+  catalysts_revisions_sentiment: 8,
+  ownership_smart_money: 8,
+  risk_fragility: 8,
 } as const;
 
 export type BlockKey = keyof typeof BLOCK_WEIGHTS;
@@ -20,6 +21,7 @@ export const BLOCK_LABELS: Record<BlockKey, string> = {
   valuation: "Bewertung",
   capital_discipline_dilution: "Kapital & Verwässerung",
   catalysts_revisions_sentiment: "Katalysatoren & Sentiment",
+  ownership_smart_money: "Ownership & Smart Money",
   risk_fragility: "Risiko & Fragilität",
 };
 

@@ -1,475 +1,241 @@
 # ARCHITECTURE.md
 
-> **Pflicht:** Jede Änderung an Modulen, Datenfluss, Schemas oder Schnittstellen muss hier dokumentiert werden — synchron mit dem Code-Change. Siehe [MANIFEST.md §8](MANIFEST.md#8-pflichten-zur-dokumentations-pflege).
+> Pflicht: Jede Aenderung an Modulen, Datenfluss, Schemas oder Schnittstellen wird hier synchron mit Code-Changes dokumentiert.
 
 ---
 
 ## 1. High-Level
 
+```text
+Browser (Next.js Pages/Server Components)
+  -> API Routes + SSE
+  -> Orchestrator Pipeline (deterministisch)
+  -> Provider Layer (capability-basiert)
+  -> Scoring / Timing / Fair Value / Trade Setup (TS)
+  -> Optionaler Analyst-Layer (LLM-Interpretation)
+  -> Storage (SQLite + Filesystem + JSONL Audit)
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│  Browser (React 18, Tailwind)                                    │
-│  Pages: Home · Run · Reports · Watchlist · Settings · Logs       │
-└──────────────────────────────────────────────────────────────────┘
-                     │  HTTP (App Router) · SSE (Live-Log)
-                     ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  Next.js 14 (Node 20) – API Routes + React Server Components     │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────┐ │
-│  │ Orchestr.│ │ Providers│ │  Scoring │ │ Storage  │ │ Export │ │
-│  │ pipeline │ │ (Adapter)│ │ (det. TS)│ │ Drizzle  │ │        │ │
-│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘ └───┬────┘ │
-│       │            │            │            │            │      │
-│       ▼            ▼            ▼            ▼            ▼      │
-│  LLM-Router    yfinance      Pure TS      SQLite      pptxgenjs  │
-│  (config.ts)   SEC EDGAR                  FS atomic   exceljs    │
-│       │        FMP / AV                   audit.jsonl puppeteer  │
-│       ├─ Ollama RSS Parser                                       │
-│       └─ DeepSeek                                                │
-└──────────────────────────────────────────────────────────────────┘
-                     │
-                     ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  Filesystem (./data)                                             │
-│  research.db · raw/ · logs/audit.jsonl · logs/runs.jsonl         │
-└──────────────────────────────────────────────────────────────────┘
-```
+
+LLM-Aufrufe laufen zentral ueber [../src/lib/llm/ollama.ts](../src/lib/llm/ollama.ts) als Router fuer LM Studio, DeepSeek und Groq.
 
 ---
 
-## 2. Verzeichnisstruktur
+## 2. Relevante Verzeichnisstruktur
 
+```text
+src/
+  app/
+    reports/[id]/page.tsx           # Dense terminal report UI
+    api/
+      runs/                         # run lifecycle + SSE
+      reports/                      # report read/export
+      settings/                     # provider/settings + test-llm
+      watchlist/
+      ollama/models/                # provider-agnostic model discovery endpoint
+      health/
+  components/
+    DecisionHero.tsx
+    ScoreKpiStrip.tsx
+    ScoreTrendSparkline.tsx
+    BlockOverviewBars.tsx
+    ExportButtons.tsx
+    PinButton.tsx
+    SourceList.tsx
+  lib/
+    orchestrator/
+      pipeline.ts
+      steps.ts
+      events.ts
+    providers/
+      collect.ts
+      types.ts
+      index.ts
+      yahoo.ts
+      edgar.ts
+      fmp.ts
+      alphavantage.ts
+      rss.ts
+      finnhub.ts
+      fred.ts
+      symbol-resolution.ts
+    scoring/
+      weights.ts
+      engine.ts
+      rubric-fn.ts
+      lenses.ts
+      gate.ts
+      timing.ts
+      taxonomy.ts
+      critical-metrics.ts
+    research/
+      normalization.ts
+      valuation.ts
+      technicals.ts
+      regime.ts
+      trade-setup.ts
+      score-history.ts
+      conflict-detector.ts
+      assumptions.ts
+      output-sanitizer.ts
+    analyst/
+      interpret.ts
+      guardrails.ts
+      evidence.ts
+    llm/
+      config.ts
+      ollama.ts
+      deepseek.ts
+      groq.ts
+      prompts.ts
+      repair.ts
+    storage/
+      db.ts
+      schema.ts
+      migrate.ts
+    schemas/
+      report.ts
+      dataset.ts
 ```
-kafin/
-├── 1index.html                  # Pilot, bleibt als Referenz
-├── research.md                  # fachliche Spec (verbindlich)
-├── docs/
-│   ├── MANIFEST.md
-│   ├── ARCHITECTURE.md
-│   ├── AGENT.md
-│   └── STATUS.md
-├── docker-compose.yml
-├── Dockerfile                   # multi-stage: deps → build → runner
-├── .env.example
-├── package.json
-├── tsconfig.json
-├── next.config.mjs
-├── tailwind.config.ts
-├── drizzle.config.ts
-├── src/
-│   ├── app/                     # Next.js App Router
-│   │   ├── layout.tsx           # Dark-Mode default, Toast-Container, Header
-│   │   ├── page.tsx             # Dashboard (Übersicht)
-│   │   ├── run/[ticker]/page.tsx
-│   │   ├── reports/page.tsx
-│   │   ├── reports/[id]/page.tsx
-│   │   ├── watchlist/page.tsx
-│   │   ├── settings/page.tsx
-│   │   ├── logs/page.tsx
-│   │   ├── api/
-│   │   │   ├── runs/route.ts            # POST start, GET list
-│   │   │   ├── runs/[id]/route.ts       # GET status/result, DELETE cancel
-│   │   │   ├── runs/[id]/stream/route.ts# SSE: live log + progress
-│   │   │   ├── reports/route.ts
-│   │   │   ├── reports/[id]/route.ts
-│   │   │   ├── reports/[id]/export/pdf/route.ts
-│   │   │   ├── reports/[id]/export/xlsx/route.ts
-│   │   │   ├── reports/[id]/export/json/route.ts  # vollst. Audit-JSON
-│   │   │   ├── reports/[id]/export/pptx/route.ts  # vorhanden, nicht im UI
-│   │   │   ├── watchlist/route.ts
-│   │   │   ├── ollama/models/route.ts   # proxy /api/tags
-│   │   │   ├── settings/route.ts
-│   │   │   ├── settings/test-llm/route.ts  # Provider-Konnektivitätstest
-│   │   │   └── health/route.ts
-│   ├── components/
-│   │   ├── layout/Header.tsx
-│   │   ├── layout/Sidebar.tsx
-│   │   ├── ui/GlassCard.tsx
-│   │   ├── ui/Toast.tsx
-│   │   ├── ui/Gauge.tsx              # SVG, Score 0–100
-│   │   ├── ui/RadarChart.tsx         # 7 Score-Blöcke
-│   │   ├── ui/KpiCard.tsx
-│   │   ├── ui/AuditTabs.tsx          # horizontale Tabs aus Pilot
-│   │   ├── ui/LogPanel.tsx           # konsumiert SSE
-│   │   ├── ui/SourceList.tsx
-│   │   ├── ui/PrecisionPanel.tsx     # aus Pilot
-│   │   ├── run/TickerInput.tsx
-│   │   ├── run/ModelSelector.tsx     # per-Step Override
-│   │   ├── run/RunProgress.tsx
-│   │   └── report/ReportView.tsx
-│   ├── lib/
-│   │   ├── orchestrator/
-│   │   │   ├── pipeline.ts           # baseFacts → questions → scoring → summary
-│   │   │   ├── steps.ts
-│   │   │   └── events.ts             # EventEmitter → SSE
-│   │   ├── providers/
-│   │   │   ├── types.ts              # interface DataProvider
-│   │   │   ├── yahoo.ts
-│   │   │   ├── edgar.ts
-│   │   │   ├── fmp.ts
-│   │   │   ├── alphavantage.ts
-│   │   │   └── rss.ts
-│   │   ├── llm/
-│   │   │   ├── ollama.ts             # chatJSON() Router: openrouter → deepseek → ollama
-│   │   │   ├── openrouter.ts         # OpenRouter-Client (Retry/Backoff/Fallback)
-│   │   │   ├── deepseek.ts           # DeepSeek-API-Client
-│   │   │   ├── config.ts             # Provider-Config aus DB (10s-Cache)
-│   │   │   ├── prompts.ts            # LLM-Prompt-Templates
-│   │   │   └── repair.ts             # JSON-Repair pass
-│   │   ├── scoring/
-│   │   │   ├── weights.ts            # Block-Gewichte (research.md §9)
-│   │   │   ├── blocks/
-│   │   │   │   ├── growth.ts
-│   │   │   │   ├── unitEconomics.ts
-│   │   │   │   ├── quality.ts
-│   │   │   │   ├── valuation.ts
-│   │   │   │   ├── capital.ts
-│   │   │   │   ├── catalysts.ts
-│   │   │   │   └── risk.ts
-│   │   │   ├── gate.ts               # Green/Yellow/Red + Hard-Blocker
-│   │   │   └── category.ts           # Rocket / Quality Growth / ...
-│   │   ├── storage/
-│   │   │   ├── db.ts                 # Drizzle client
-│   │   │   ├── schema.ts             # Tabellen
-│   │   │   ├── reports.ts            # MD+JSON writer (atomar)
-│   │   │   ├── raw.ts                # Roh-Artefakt Writer
-│   │   │   └── audit.ts              # JSONL append
-│   │   ├── export/
-│   │   │   ├── pdf.ts                # puppeteer von /reports/[id]?print=1
-│   │   │   ├── xlsx.ts
-│   │   │   └── pptx.ts
-│   │   ├── schemas/
-│   │   │   ├── report.ts             # Zod nach research.md §21
-│   │   │   ├── score.ts
-│   │   │   └── settings.ts
-│   │   ├── logging/
-│   │   │   ├── pino.ts
-│   │   │   └── ui-log.ts             # SSE-Format
-│   │   └── utils/
-│   │       ├── ulid.ts
-│   │       ├── atomic-write.ts
-│   │       └── cache.ts
-│   └── styles/
-│       └── globals.css               # Dark-Tokens aus 1index.html portiert
-├── drizzle/
-│   └── migrations/
-├── tests/
-│   ├── unit/
-│   └── e2e/
-└── data/                              # gemounted im Container
-    ├── research.db
-    ├── reports/
-    ├── raw/
-    ├── logs/
-    └── cache/
-```
+
+Persistenz unter data/:
+- research.db
+- reports/{TICKER}/*.md + *.json
+- raw/{TICKER}/{runId}/
+- logs/audit.jsonl
+- logs/runs.jsonl
 
 ---
 
-## 3. Datenfluss eines Research-Runs
+## 3. Pipeline-Flow (Ist-Stand)
 
-```
-POST /api/runs { ticker, modelOverride?:{extract,scoring,summary} }
-   │
-   ▼
-runPipeline(runId, ticker)  — alles in einem try/catch; Fehler → SSE error-Event
-   │
-   ├─ Phase 1 (sequentiell):
-   │   ├─ 1. stepFetchBaseData()    ── Provider parallel: yfinance, FMP, EDGAR, RSS
-   │   │     emit("progress", 15%)
-   │   │
-   │   ├─ 2. stepDeriveMetrics()   ── deterministisch: Rule-of-40, CAGR, SBC%, etc.
-   │   │     emit("progress", 22%)
-   │   │
-   │   └─ 3. stepBuildContext()    ── Facts + Quellen-Snippets → context + blockContexts
-   │         emit("progress", 30%)
-   │
-   ├─ Phase 2 (PARALLEL — größter Laufzeit-Gewinn):
-   │   ├─ 4a. stepExtractFacts()   ── LLM: key_metrics + identity aus globalem Context
-   │   │       model: modelExtract, temp: 0.1, context: max 18.000 Zeichen
-   │   └─ 4b. stepAnswerSections() ── LLM: Blöcke A–G
-   │           model: modelScoring, temp: 0.2, context: max 12.000 Zeichen/Block
-   │           rationale: max 10 Wörter/Indikator
-   │           concurrency: deepseek=7, ollama/openrouter=1
-   │     emit("progress", 70%)
-   │
-   └─ Phase 3 (sequentiell):
-       ├─ 5. stepComputeScoreAndGate() ── deterministisch: Gewichte → Score 0–100,
-       │     emit("progress", 80%)        Gate Green/Yellow/Red, Hard-Blocker
-       │
-       ├─ 6. stepSummarize()       ── LLM: Bull/Bear/Thesis/Catalysts
-       │     emit("progress", 92%)    model: modelSummary, temp: 0.4
-       │
-       └─ 7. stepPersist()         ── atomar: MD+JSON schreiben, DB-Row, Audit
-             emit("done", 100%, reportId)
-```
+Orchestrator: [../src/lib/orchestrator/pipeline.ts](../src/lib/orchestrator/pipeline.ts)
 
-### LLM-Routing (seit Update 8/9)
+### Phase 1: Vorbereitung (sequentiell)
 
-`chatJSON()` in `ollama.ts` liest via `getLLMConfig()` den aktiven Provider aus der DB:
+1. fetch: stepFetchBaseData
+2. normalize: stepNormalizeDataset
+3. metrics: stepDeriveMetrics
+4. context: stepBuildContext
 
-```
-chatJSON(opts)
-   │
-   ├─ getLLMConfig().provider === "openrouter"
-   │     └─ chatJSONOpenRouter(opts, apiKey, model)   [openrouter.ts]
-   │         POST https://openrouter.ai/api/v1/chat/completions
-   │         response_format: { type: "json_object" }
-   │         Retry/Backoff bei HTTP 5xx / Netzwerk-Fehler
-   │         AbortSignal.timeout als harter Cutoff
-   │         Fallback-Chain: konfiguriert → openrouter/free → gemma-free → auto
-   │
-   ├─ provider === "deepseek"
-   │     └─ chatJSONDeepSeek(opts, apiKey, model)      [deepseek.ts]
-   │         POST https://api.deepseek.com/chat/completions
-   │         response_format: { type: "json_object" }
-   │
-   └─ provider === "ollama"
-         └─ ollama.chat({ ...opts, stream: true })
-             akkumuliert Tokens aus AsyncIterable
-             (stream:true → kein undici headersTimeout)
-```
+### Phase 2: Deterministische Extraktion/Bewertung
 
-### SSE-Event-Bus
+5. extract: stepExtractFacts (deterministisch aus Dataset/Faktenpfad)
+6. sections: stepAnswerSections (deterministische Rubric-Funktionen, kein Section-LLM)
 
-```
-ensureRunBus(runId)  — globalThis.__kafinRunBus (Map, geteilt über alle Route-Module)
-   │
-   ├─ emitRun(runId, event, data)   ── buffert + emitter.emit()
-   ├─ getBuffer(runId)              ── replay bei Late-Connect
-   └─ isDone(runId)                 ── stream sofort schließen wenn bereits fertig
-```
+### Phase 3: Nachverarbeitung
 
-Max-Listener auf `0` (unbegrenzt) gesetzt, verhindert `MaxListenersExceededWarning` bei vielen Reconnects. SSE-Cleanup läuft in allen Exit-Pfaden (`done`/`error`/`cancel`/`abort`).
+7. score: stepComputeScoreAndGate
+8. timing: stepComputeTimingAxis
+9. peer: stepComputePeerPercentiles
+10. fair_value: stepComputeFairValue
+11. trade_setup: stepComputeTradeSetup
+12. analyst: stepInterpretAnalyst (optional)
+13. verdict: stepGenerateVerdict
+14. persist: stepPersist
 
-> **Wichtig:** `bus` hängt an `globalThis.__kafinRunBus` — notwendig weil Next.js-Dev-Mode jede Route-Datei in einer eigenen Modul-Instanz evaluiert.
+Progress, Step-Start/Done, Error und Done werden ueber SSE emittiert.
 
 ---
 
-**Cancel:** `DELETE /api/runs/:id` setzt Abort-Flag, alle In-Flight-`fetch`/Ollama-Streams werden via `AbortController` abgebrochen. Teil-Artefakte bleiben unter `raw/`.
+## 4. Deterministik vs. LLM
 
-**SSE-Topics:** `log`, `progress`, `step:start`, `step:done`, `error`, `done`.
+Deterministisch:
+- Kennzahlen, Scoring, Gate, Category
+- Timing/Regime
+- Fair Value
+- Trade Setup
+- Data Quality, Coverage, Konfliktauflosung, Confidence Caps
 
----
+LLM-basiert (guarded):
+- Optionaler Analyst-Layer (Interpretation)
+- Verdict-Detail-Text
 
-## 4. Datenbank-Schema (Drizzle, SQLite-Dialekt)
-
-```ts
-// reports
-id: text primary key (ulid)
-ticker: text not null
-exchange: text
-company_name: text
-research_date: text not null     // YYYY-MM-DD
-run_id: text not null unique
-category: text                    // Rocket | Quality Growth | ...
-gate: text                        // Green | Yellow | Red
-score_total: integer              // 0..100
-score_breakdown: text (json)
-confidence: text                  // low | medium | high
-report_md_path: text
-report_json_path: text
-raw_dir: text
-created_at: integer (unix)
-duration_ms: integer
-model_extract: text
-model_scoring: text
-model_summary: text
-hard_blockers: text (json array)
-handoff_to_trade_engine: integer (0|1)
-
-// runs (audit, auch failed)
-id: text primary key
-ticker: text
-status: text   // queued | running | done | failed | cancelled
-progress: integer
-error: text
-started_at, finished_at: integer
-report_id: text nullable → reports.id
-
-// watchlist
-ticker: text primary key
-added_at: integer
-notes: text
-last_report_id: text nullable
-
-// settings
-key: text primary key
-value: text  // json blob
-updated_at: integer
-
-// sources (pro Report)
-id: integer pk autoincrement
-report_id: text → reports.id
-url: text
-title: text
-class: text   // A | A- | B | B- | C | D | E
-fetched_at: integer
-
-// indexes
-reports(ticker, research_date desc)
-runs(status, started_at desc)
-```
+Wichtige Invariante:
+- Numerischer Fingerprint vor/nach Analyst-Schritt muss identisch bleiben.
 
 ---
 
-## 5. UI — Pages
+## 5. LLM-Routing
 
-| Route | Inhalt | Pilot-Vorbild |
-|---|---|---|
-| `/` Dashboard | Letzte Reports, Watchlist-Snapshot, KPI-Tiles (Anzahl Reports, Ø Score, Gate-Verteilung, Top 5 Score, Letzte Fehler) | "Übersicht"-Kacheln |
-| `/run/[ticker]` (Detail) | Live-Lauf: Step-Progress, Log-Panel, abbrechbar | "Audit läuft"-View |
-| `/reports` | Tabelle + Filter (Ticker, Datum, Gate, Kategorie, Score-Range), „vs. Vorgänger“-Button | Tab „Berichte“ |
-| `/reports/[id]` (**Audit-Dashboard**) | siehe §6 | Tab „Auswertung“ |
-| `/reports/compare/[a]/[b]` | Diff zweier Runs (Score-Δ, Block-Δ, Metrik-Δ, Listen-Δ, These vorher/nachher) | neu |
-| `/watchlist` | Ticker-Verwaltung, Quick-Run-Button, Notes editierbar, Unpin mit Confirm | – |
-| `/settings` | Provider-Toggle (Ollama / DeepSeek / OpenRouter), API-Keys, Modell-Felder, Verbindung testen | „Einstellungen“ |
-| `/logs` | `runs.jsonl` Pipeline-Logs + `audit.jsonl` LLM-Audit-Tabelle, beide live mit `force-dynamic` | „Log“-Tab |
+Router: [../src/lib/llm/ollama.ts](../src/lib/llm/ollama.ts)
 
----
+Provider-Aufloesung:
+- lmstudio
+- deepseek
+- groq
 
-## 6. Audit-Dashboard (`/reports/[id]`) — Layout
+Base URL lokal:
+- LLM_BASE_URL
+- sonst LM_STUDIO_BASE_URL
+- sonst OLLAMA_BASE_URL
+- sonst http://localhost:1234
 
-> Ziel: alle relevanten KPIs, Grafiken und Scorings *auf einer Seite, ohne Scroll-Suche*. Übernimmt Glass-Cards, Score-Strip (rot/gelb/grün), Tab-Bar aus Pilot.
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  Header: NVDA · NASDAQ · 2026-05-20 · Run abc… · Modell: llama3.1│
-│  [Export PDF] [Export XLSX] [Export PPTX] [Re-Run] [Watchlist★] │
-└──────────────────────────────────────────────────────────────────┘
-
-Row 1 – Hero (3 Spalten)
-┌──────────────┬──────────────┬─────────────────────────────────────┐
-│ GAUGE         │ GATE Badge    │ KATEGORIE Badge                    │
-│ Score 78/100  │ GREEN         │ Quality Growth                     │
-│ (SVG, Pilot)  │ + Confidence  │ + 1-Satz-These                     │
-└──────────────┴──────────────┴─────────────────────────────────────┘
-
-Row 2 – Radar + KPI-Strip
-┌────────────────────────┬─────────────────────────────────────────┐
-│ Radar (7 Achsen,       │ KPI-Cards (3×3 Grid)                    │
-│ Block A–G Sub-Scores)  │ Rev Growth · GM · OM · FCF Margin       │
-│                        │ ROIC · Rule of 40 · Share Cnt Δ · SBC % │
-│                        │ NTM P/E · EV/Sales · PEG · Beta         │
-└────────────────────────┴─────────────────────────────────────────┘
-
-Row 3 – Tab-Bar (horizontal, aus Pilot)
-[A Growth 14/18] [B Unit Econ 9/14] [C Moat 13/18] [D Valuation 8/14]
-[E Capital 10/12] [F Catalysts 8/12] [G Risk 7/12] [Sources] [Raw]
-
-Active Tab Content:
-┌──────────────────────────────────────────────────────────────────┐
-│ Block-Title · Sub-Score · Begründung (LLM) · Quellen-Liste mit  │
-│ Class-Badge (A/B/C) · Red-Flags Liste · Mini-Charts wo sinnvoll │
-└──────────────────────────────────────────────────────────────────┘
-
-Row 4 – Bull / Bear (2 Spalten) + Hard-Blockers + Open Questions
-```
-
-Farbsystem (aus Pilot übernommen): `score-strip-green/yellow/red` Class an `GlassCard`. Dark-Default. Toggle hellt nur Hintergründe auf.
+Konfiguration kommt aus [../src/lib/llm/config.ts](../src/lib/llm/config.ts) mit kurzem Cache und Settings-Invalidierung.
 
 ---
 
-## 7. Live-Log (SSE)
+## 6. Report-Schema und UI
 
-- Endpoint: `GET /api/runs/:id/stream` (Content-Type `text/event-stream`)
-- Events:
-  ```
-  event: log
-  data: {"ts":..,"level":"info","msg":"Fetching EDGAR filings…"}
+Schema:
+- Pflichtfelder in [../src/lib/schemas/report.ts](../src/lib/schemas/report.ts)
+- inklusive run_integrity, audit_snapshot, score_interpretation, analyst, trade_setup
 
-  event: progress
-  data: {"pct":35,"step":"extract"}
-
-  event: done
-  data: {"reportId":"…"}
-  ```
-- Frontend: `EventSource` in `LogPanel.tsx`, auto-scroll, Level-Filter, Suche, Copy-Button. Identische Optik zum Pilot-Log.
+Report-UI:
+- [../src/app/reports/[id]/page.tsx](../src/app/reports/[id]/page.tsx)
+- terminal-dichte Darstellung mit Setup/Regime/Kennzahlen/Charts/Ownership/Advisor
+- Kerninfos ohne verpflichtende Akkordeons
 
 ---
 
-## 8. LLM-Integration
+## 7. Datenbank (Kurzfassung)
 
-- **Models (Ollama):** `GET /api/ollama/models` ruft `GET http://ollama:11434/api/tags`, cached 30 s.
-- **Modellauswahl:** Ausschließlich über die Einstellungsseite (`/settings`) — kein Override im Run-Dialog.
-- **Audit:** jeder Call → `data/logs/audit.jsonl` (`runId`, `step`, `model`, `promptHash`, `promptPath`, `responsePath`, `ms`, `ok`, `error`). Bei OpenRouter zusätzlich das tatsächlich verwendete Modell nach Fallback.
-- **JSON-Repair:** `lib/llm/repair.ts` — portiert aus Pilot, verwendet Klammer-Stack-Tracker.
+Tabellen:
+- runs
+- reports
+- watchlist
+- settings
+- peer_metrics
+- score_history
 
----
+Migrationen: drizzle/migrations/
 
-## 9. Konfiguration (`.env`)
-
-```
-NODE_ENV=production
-PORT=3000
-DATA_DIR=/data
-OLLAMA_BASE_URL=http://ollama:11434
-FMP_API_KEY=
-ALPHA_VANTAGE_API_KEY=
-EDGAR_USER_AGENT="Kafin Research <you@example.com>"
-LOG_LEVEL=info
-```
-
-Provider-spezifische Keys (OpenRouter, DeepSeek) werden **nicht** per `.env` gesetzt, sondern über die Einstellungsseite in die `settings`-Tabelle geschrieben und per `src/lib/llm/config.ts` mit 10-s-Cache gelesen. Keine Secrets im Repo. `.env.example` ohne Werte einchecken.
-
-## 10. Docker Compose
-
-Ollama läuft **nicht** im Compose. Es ist ein Host-Dienst (aktuell Windows + NVIDIA, später Prod auf AMD). Die App spricht es ausschließlich über HTTP an.
-
-```yaml
-services:
-  app:
-    build: .
-    ports: ["3000:3000"]
-    env_file: .env
-    environment:
-      # erreicht den Host-Ollama von Linux/Windows-Containern aus
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"   # Linux-Hosts
-    volumes: ["./data:/data"]
-    restart: unless-stopped
-```
-
-**Hinweis:** Für lokale Dev-Runs ohne Container reicht `npm run dev`; `OLLAMA_BASE_URL=http://localhost:11434` in `.env`.
-
-Phase 2: optionaler `worker`-Service (BullMQ + Redis), wenn Runs in Queue laufen sollen.
+Drizzle-Schema: [../src/lib/storage/schema.ts](../src/lib/storage/schema.ts)
 
 ---
 
-## 11. Aus dem Pilot zu portierende Funktionen
+## 8. Events und Live-Logs
 
-| Pilot | Ziel-Modul |
-|---|---|
-| `logger`-Pattern + farbiges Live-Log | `lib/logging/ui-log.ts` + `LogPanel.tsx` |
-| `parseRobustJSON` (JSON-Repair) | `lib/llm/repair.ts` |
-| `runGoogleSearch` (mit Timeout/AbortController) | nicht portiert (Google entfällt) — Muster `AbortController` bleibt |
-| Glass-Cards, Score-Strip, Audit-Tabs, Toasts, Gauges | `components/ui/*` |
-| Settings-Modal mit Modell-/Mode-Auswahl | `app/settings/page.tsx` |
-| PPTX-Export (`pptxgenjs`) | `lib/export/pptx.ts` |
-| XLSX-Export (`xlsx` → wir nehmen `exceljs`) | `lib/export/xlsx.ts` |
-| PDF-Export (`html2pdf` → wir nehmen `puppeteer`) | `lib/export/pdf.ts` |
-| Dark-Mode-Tokens (Tailwind-Config) | `tailwind.config.ts` + `globals.css` |
+Run-Events:
+- log
+- progress
+- step:start
+- step:done
+- error
+- done
 
-**Nicht portiert:** MSAL/Entra-Auth, CRM-Service, Firebase, Google Custom Search, Mock-Daten-Pfad (außer Fixtures für Tests).
+SSE-Route:
+- /api/runs/[id]/stream
 
----
-
-## 12. Sicherheit & Datenschutz
-
-- Local-only: keine externen Inferenz-APIs, kein Telemetrie-Versand.
-- Externe HTTP-Calls (yfinance/EDGAR/FMP/AV/RSS) timeoutet (15 s), AbortController, kein `eval`.
-- API-Keys nur aus `.env`, niemals in Client-Bundle (Server-only Module).
-- Input-Validation per Zod auf allen API-Routes (OWASP A03).
-- SQL ausschließlich via Drizzle (Prepared Statements, OWASP A03).
-- CSP: `default-src 'self'`, kein `unsafe-eval`; Chart.js läuft so.
-- Atomare Datei-Writes (`*.tmp` + `rename`) → keine korrupten Reports bei Crash.
+Event-Bus:
+- [../src/lib/orchestrator/events.ts](../src/lib/orchestrator/events.ts)
 
 ---
 
-## 13. Tests
+## 9. Test-Strategie
 
-- Unit: Scoring-Blöcke, Gate, Kategorie, JSON-Repair, Schemas (Zod).
-- Integration: Provider-Adapter mit Fixture-Responses.
-- Contract: LLM-Output gegen Zod-Schema (mit aufgezeichneten Ollama-Responses als Fixtures).
-- E2E (Playwright): Run starten → SSE empfangen → Dashboard rendert → Export liefert Datei.
+Unit (Vitest):
+- deterministische Scoring-/Research-Module
+- Guardrails, Schema, Persistenzregeln
+- Phase-6C Tests fuer trade_setup, advisor, terminal-density, missing-data-inline, no-recompute
+
+E2E (Playwright):
+- smoke path fuer zentrale App-Flows
+
+---
+
+## 10. Betriebsregeln
+
+- Keine erfundenen Zahlen im Produktivpfad.
+- Kein Ueberschreiben historischer Reports (immutable runs).
+- Secrets werden in Logs/URLs redacted persistiert.
+- Technische Abruffehler werden als run_integrity sichtbar gemacht.

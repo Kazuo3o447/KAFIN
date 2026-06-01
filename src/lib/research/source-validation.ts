@@ -3,6 +3,12 @@ interface CitationIndicator {
   score: number | null;
   rationale: string;
   sourceIdx: number | null;
+  sourceSupportStatus?: "supported" | "unsupported" | "not_checked" | "internal_metric";
+  scoreType?: "deterministic" | "llm_judgment" | "hybrid";
+  scoreValid?: boolean;
+  rationaleValid?: boolean;
+  dataStatus?: "valid" | "missing_required_data" | "not_applicable" | "unsupported_claim" | "conflicting_data" | "stale_data";
+  invalidSourceRefs?: string[];
 }
 
 interface CitationBlock {
@@ -76,20 +82,42 @@ export function validateBlockSources<T extends CitationBlock>(
   const invalid: string[] = [];
   const indicators = block.indicators.map((indicator) => {
     const idx = indicator.sourceIdx;
-    if (idx == null) return indicator;
+    if (idx == null) return { ...indicator, sourceSupportStatus: indicator.sourceSupportStatus ?? "not_checked" };
+
+    const sourceText = sourceEvidence.get(idx) ?? "";
+    if (/^derived:/i.test(sourceText) || /^internal:/i.test(sourceText)) {
+      return { ...indicator, sourceSupportStatus: "internal_metric" as const };
+    }
+
     const claim = `${indicator.name} ${indicator.rationale}`;
-    if (sourceSupportsClaim(idx, claim, sourceEvidence)) return indicator;
+    if (sourceSupportsClaim(idx, claim, sourceEvidence)) {
+      return { ...indicator, sourceSupportStatus: "supported" as const };
+    }
     invalid.push(`${indicator.name}: sourceIdx ${idx} does not support rationale`);
-    return { ...indicator, sourceIdx: null };
+    if (indicator.scoreType === "llm_judgment") {
+      return {
+        ...indicator,
+        sourceIdx: null,
+        score: null,
+        sourceSupportStatus: "unsupported" as const,
+        scoreValid: false,
+        rationaleValid: false,
+        dataStatus: "unsupported_claim" as const,
+        invalidSourceRefs: [...(indicator.invalidSourceRefs ?? []), `sourceIdx ${idx} unsupported`],
+      };
+    }
+    return {
+      ...indicator,
+      sourceIdx: null,
+      sourceSupportStatus: "unsupported" as const,
+      rationaleValid: false,
+      invalidSourceRefs: [...(indicator.invalidSourceRefs ?? []), `sourceIdx ${idx} unsupported`],
+    };
   });
 
   return {
     ...block,
     indicators,
     invalid_source_refs: invalid,
-    red_flags:
-      invalid.length > 0
-        ? [...(block.red_flags ?? []), ...invalid.map((msg) => `Unsichere Quellenreferenz entfernt (${msg})`)]
-        : block.red_flags,
   };
 }

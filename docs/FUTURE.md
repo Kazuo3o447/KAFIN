@@ -6,13 +6,6 @@
 
 ## Offene Entscheidungen
 
-### F-001 · Default-Ollama-Modell
-- **Kontext:** App soll dynamisch alle in Ollama installierten Modelle anbieten (`GET /api/tags`).
-- **Aktueller Default-Mechanismus:** Erstes verfügbares Modell aus der Liste; User-Auswahl wird in Settings persistiert.
-- **Optionen für später:** Festes Empfehlungsmodell pro Step (Extract / Scoring / Summary / Red-Team) hart eintragen.
-- **Trigger:** Sobald wir ein Modell auf Prod-Hardware (AMD) als „good enough" für JSON-Mode + Reasoning identifiziert haben.
-- **Status:** offen.
-
 ### F-002 · Job-Queue / Worker
 - **Kontext:** MVP fährt Runs in-process im Next.js-Node-Prozess (`EventEmitter` → SSE).
 - **Trigger:** sobald >1 paralleler Run nötig, oder Run-Dauer > 5 min, oder Crash-Resilienz wichtiger wird.
@@ -21,7 +14,7 @@
 
 ### F-003 · Sentiment-/News-Pipeline
 - **Kontext:** RSS-Ingestion + FinBERT-Klassifizierung sind in `research.md` §15.3 vorgesehen, aber nicht im MVP.
-- **Optionen:** FinBERT via Ollama (sofern Modell verfügbar), HF Inference lokal, oder klassisches Lexikon-basiertes Scoring.
+- **Optionen:** FinBERT via LM Studio (sofern Modell verfügbar), HF Inference lokal, oder klassisches Lexikon-basiertes Scoring.
 - **Trigger:** nach MVP, sobald Watchlist regelmäßig betrieben wird.
 - **Status:** offen.
 

@@ -103,6 +103,18 @@ describe("computeGate", () => {
     ).toBe("Yellow");
   });
 
+  it("Niedrige Coverage/Confidence allein erzwingen nicht Red", () => {
+    expect(
+      computeGate({
+        scoreTotal: 60,
+        coverage: 0.25,
+        confidence: "low",
+        category: "Transitional",
+        hardBlockers: [],
+      }),
+    ).toBe("Yellow");
+  });
+
   it("Handoff nur bei Green", () => {
     const ok = canHandoffToTradeEngine({
       scoreTotal: 80,

@@ -1,46 +1,56 @@
 # Kafin Research
 
-Lokale Web-App für fundamentale Aktien-Research mit lokalem LLM (Ollama).
-Generiert reproduzierbare Research-Reports nach dem in [research.md](research.md)
-festgelegten 7-Block-Scoring-Prozess (0–100 Punkte, Gates Green/Yellow/Red).
+Lokale Web-App fuer deterministische Aktien-Research mit auditierbarem Datenpfad, LLM-Interpretation als optionalem Zusatz-Layer und trader-orientierter Report-Ansicht.
 
-> **Scope:** Research & Scoring, **kein Live-Trading**, keine Broker-Anbindung.
-> Siehe [docs/MANIFEST.md](docs/MANIFEST.md) für die verbindliche Scope-Definition.
+Scope: Research und Entscheidungsunterstuetzung, kein Live-Trading, keine Broker-Anbindung.
+Verbindliche Produktgrenzen stehen in [docs/MANIFEST.md](docs/MANIFEST.md).
+
+---
+
+## Kernprinzipien
+
+- Deterministische Numerik zuerst: Kennzahlen, Score, Gate, Fair Value, Trade Setup kommen aus TypeScript-Logik.
+- LLM als Interpret, nicht als Rechner: Analyst-Texte sind getrennt und duerfen numerische Felder nicht veraendern.
+- Reproduzierbarkeit und Audit: Rohartefakte, Logs, Report-JSON und Version-Metadaten werden persistiert.
+- Resilienz bei Datenabruf: Capability-Status, Retry/Backoff und Run-Integrity-Banner sind Teil des Reports.
 
 ---
 
 ## Features
 
-- **7-Block-Scoring-Pipeline** (Growth/Market · Unit-Economics · Quality/Moat · Valuation · Capital Discipline · Catalysts · Risk) mit deterministischem Gate/Category-Mapping.
-- **Lokales LLM via Ollama** für Faktenextraktion, Block-Bewertung und Thesen-Generierung. Modell pro Step wählbar (`/api/ollama/models`).
-- **Provider-Layer**: Yahoo Finance, SEC EDGAR, RSS, FMP, Alpha Vantage. Adapter-Pattern, Throttle pro Host, Raw-Artefakte für Reproduzierbarkeit.
-- **Live-Run-UI** mit Server-Sent Events (Progress, Step-Logs, Errors).
-- **Audit-Dashboard** pro Report: Gauge, 7-Block-Radar, KPI-Karten, Block-Detail mit Indikator-Begründungen + Quellen-Refs, Hard Blockers.
-- **Versionsvergleich**: Score-Δ, 7-Block-Δ, Top-30 Indikator-Δs, Key-Metrics inkl. % Δ, Listen-Diff (Bull/Bear/Catalysts/RedFlags), Thesis vorher/nachher.
-- **Exporte**: PDF (Puppeteer), XLSX (ExcelJS), PPTX (PptxGenJS).
-- **Watchlist** mit Pin/Unpin und inline editierbaren Notizen.
-- **Logs-Seite** mit Auto-Refresh und ERROR/WARN/SUCCESS-Filtern.
-- **Linke Sidebar-Navigation**, Dark-Mode-Default, Print-CSS für PDF-Export.
+- Deterministische Scoring-Engine mit 8 Block-Dimensionen und Gate-Logik.
+- Timing/Regime-Achse, Fair-Value-Berechnung und deterministisches Trade-Setup.
+- Optionaler KI-Analyst mit Guardrails (kein Score-Override, keine frei erfundenen Zahlen).
+- Dense Trader-Terminal auf [src/app/reports/[id]/page.tsx](src/app/reports/[id]/page.tsx):
+  - Statuszeile
+  - Trade-Setup / Verdikt / Markt-Regime
+  - immer sichtbare Kennzahlen und Momentum-Zeile
+  - Mini-Charts, Ownership/Smart-Money, Advisor-Trigger
+- Watchlist, Reports-Liste, Vergleichsansicht, Exporte (PDF/XLSX/JSON).
+- Live-Run-Events via SSE.
 
 ---
 
-## Tech-Stack
+## Tech Stack
 
-TypeScript (strict) · Next.js 14 App Router · React 18 · TailwindCSS 3 ·
-Drizzle ORM + better-sqlite3 · Zod · Ollama · yahoo-finance2 · Chart.js ·
-ExcelJS · PptxGenJS · Puppeteer · Vitest · Playwright.
+- Next.js 14 App Router, React 18, TypeScript strict
+- TailwindCSS
+- Drizzle ORM + better-sqlite3 (SQLite)
+- Zod
+- LLM Router fuer LM Studio, DeepSeek, Groq
+- Vitest + Playwright
 
-Versionen sind in [package.json](package.json) gepinnt. Begründungen
-in [docs/MANIFEST.md §2](docs/MANIFEST.md).
+Details und verbindliche Entscheidungen: [docs/MANIFEST.md](docs/MANIFEST.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ---
 
 ## Quickstart
 
 ### Voraussetzungen
-- Node.js ≥ 20.11
-- Ollama lokal (`http://localhost:11434`) mit ≥ 1 geladenem Modell
-- Optional: FMP- und/oder Alpha-Vantage-API-Key in `.env`
+
+- Node.js >= 20.11
+- LM Studio lokal erreichbar (Default: http://localhost:1234)
+- Optional: DeepSeek/Groq API-Keys ueber Settings-UI
 
 ### Setup
 
@@ -48,109 +58,71 @@ in [docs/MANIFEST.md §2](docs/MANIFEST.md).
 git clone https://github.com/Kazuo3o447/KAFIN.git
 cd KAFIN
 npm install
-copy .env.example .env       # API-Keys ergänzen (optional)
-npm run db:migrate           # SQLite-Schema anlegen
-npm run dev                  # http://localhost:3000
+copy .env.example .env
+npm run db:migrate
+npm run dev
 ```
 
-### Skripte
+App: http://localhost:3000
 
-| Befehl | Wirkung |
-|---|---|
-| `npm run dev` | Next-Dev-Server (Port 3000) |
-| `npm run build` | Production-Build |
-| `npm start` | Production-Server |
-| `npm run typecheck` | `tsc --noEmit` |
-| `npm test` | Vitest Unit-Tests |
-| `npm run test:e2e` | Playwright Smoke (8 Tests) |
-| `npm run test:e2e:install` | Playwright-Browser (Chromium) |
-| `npm run db:generate` | Drizzle-Migration generieren |
-| `npm run db:migrate` | Migration anwenden |
+### Wichtige Scripts
 
-### Docker
-
-```powershell
-docker compose up -d
-```
-
-Ollama läuft auf dem Host (siehe [docs/STATUS.md](docs/STATUS.md) — „Offene
-Entscheidungen"), die App spricht via `http://host.docker.internal:11434`.
+- npm run dev
+- npm run build
+- npm start
+- npm run typecheck
+- npm test
+- npm run test:e2e
+- npm run db:generate
+- npm run db:migrate
 
 ---
 
-## Routen
+## Wichtige Routen
 
-| Pfad | Zweck |
-|---|---|
-| `/` | Start: Ticker eingeben, Modelle wählen, Run starten |
-| `/run/[ticker]` | Live-Run mit SSE-Progress |
-| `/reports` | Reports-Liste mit „vs. Vorgänger"-Button |
-| `/reports/[id]` | Audit-Dashboard inkl. Pin- und Export-Buttons |
-| `/reports/compare/[a]/[b]` | Versionsvergleich |
-| `/watchlist` | Gepinnte Tickers, Notes editierbar |
-| `/logs` | Server-Logs (Auto-Refresh) |
-| `/settings` | App- und Modell-Defaults |
+- /
+- /run/[ticker]
+- /reports
+- /reports/[id]
+- /reports/compare/[a]/[b]
+- /watchlist
+- /logs
+- /settings
 
-API-Routen: `/api/runs`, `/api/runs/[id]/stream` (SSE), `/api/reports/[id]/export/{pdf,xlsx,pptx}`, `/api/watchlist`, `/api/ollama/models`, `/api/health`.
-
----
-
-## Verzeichnisstruktur (verkürzt)
-
-```
-src/
-  app/                 Next App Router (Pages + API)
-  components/          GlassCard, Gauge, RadarChart, KpiCard,
-                       AuditTabs, LogPanel, SourceList, ExportButtons,
-                       PinButton, WatchlistRowActions, Toast, …
-  lib/
-    diff/              Report-Diff (Score-Δ, Block-Δ, Listen-Δ)
-    export/            PDF/XLSX/PPTX-Generierung
-    llm/               Ollama-Client + Prompts
-    orchestrator/      7-Step-Pipeline + SSE-Event-Bus
-    providers/         Yahoo · EDGAR · RSS · FMP · AlphaVantage
-    schemas/           Zod-Schemas (Report, KeyMetrics, BlockAudit, …)
-    scoring/           Weights · Score · Gate
-    storage/           Drizzle Schema + Migrations
-tests/
-  unit/                Vitest (23 Tests)
-  e2e/                 Playwright (8 Tests)
-data/                  SQLite-DB + Reports + Raw-Artefakte (lokal, nicht im Repo)
-docs/                  MANIFEST · ARCHITECTURE · AGENT · STATUS · FUTURE
-```
+API (Auszug):
+- /api/runs
+- /api/runs/[id]/stream
+- /api/reports/[id]/export/{pdf,xlsx,json,pptx}
+- /api/watchlist
+- /api/ollama/models
+- /api/settings
+- /api/settings/test-llm
+- /api/health
 
 ---
 
-## Datenfluss (verkürzt)
+## Datenablage
 
-```
-Ticker → fetchBaseData (Provider parallel)
-       → buildContext  (Quellen-Map + Fakten)
-       → extractFacts  (LLM: Identity + KeyMetrics)
-       → answerSections (LLM: 7 Blöcke parallel, max 2)
-       → computeScoreAndGate (deterministisch)
-       → summarize     (LLM: Thesis/Bull/Bear/Catalysts)
-       → persist       (atomic write MD + JSON + DB)
-```
-
-Vollständige Architektur in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Unter data/: 
+- research.db
+- reports/{TICKER}/*.md + *.json
+- raw/{TICKER}/{runId}/
+- logs/audit.jsonl
+- logs/runs.jsonl
 
 ---
 
 ## Dokumentation
 
-| Datei | Inhalt |
-|---|---|
-| [docs/MANIFEST.md](docs/MANIFEST.md) | Scope, Stack-Festlegung, Verboten-Liste, Storage, Datenquellen |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layer, Pipeline-Steps, DB-Schema, SSE-Bus |
-| [docs/AGENT.md](docs/AGENT.md) | Prompts, Modell-Defaults, Temperaturen, JSON-Schemas |
-| [docs/STATUS.md](docs/STATUS.md) | Logbuch: aktueller Stand, nächste Schritte, Changelog |
-| [docs/FUTURE.md](docs/FUTURE.md) | Verschobene Entscheidungen (mit Trigger) |
-| [research.md](research.md) | Fachliche Basis: Research-Prozess, Scoring, Output-Schema §21 |
+- [docs/MANIFEST.md](docs/MANIFEST.md): Scope, Regeln, Grenzen
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): Module, Datenfluss, Persistenz
+- [docs/AGENT.md](docs/AGENT.md): LLM-Verhalten, Guardrails, Prompt-Regeln
+- [docs/STATUS.md](docs/STATUS.md): Session-Log und aktueller Stand
+- [docs/FUTURE.md](docs/FUTURE.md): bewusst verschobene Entscheidungen
+- [research.md](research.md): fachliche Spezifikation
 
 ---
 
-## Lizenz
+## Hinweis
 
-Privates Projekt. Keine Garantie auf Korrektheit der generierten Inhalte —
-**keine Anlageberatung**.
+Keine Anlageberatung. Ergebnisse sind als Research-Artefakte mit Quellen- und Qualitaetskontext zu verstehen.

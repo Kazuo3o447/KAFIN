@@ -143,7 +143,7 @@ describe("research pipeline helpers", () => {
 
     expect(checked.indicators[0]?.sourceIdx).toBeNull();
     expect(checked.invalid_source_refs).toHaveLength(1);
-    expect(checked.red_flags?.[0]).toContain("Unsichere Quellenreferenz");
+    expect(checked.red_flags ?? []).toHaveLength(0);
   });
 
   it("builds a moat assessment instead of leaving Unknown hardcoded", () => {

@@ -23,7 +23,22 @@ async function callDeepSeek(
   model: string,
   temperature: number,
   apiKey: string,
-): Promise<{ content: string; tokensIn?: number; tokensOut?: number }> {
+): Promise<{
+  content: string;
+  tokensIn?: number;
+  tokensOut?: number;
+  effectiveModel?: string;
+  systemFingerprint?: string | null;
+  rateLimit?: {
+    limitRequests?: string | null;
+    limitTokens?: string | null;
+    remainingRequests?: string | null;
+    remainingTokens?: string | null;
+    resetRequests?: string | null;
+    resetTokens?: string | null;
+    retryAfter?: string | null;
+  };
+}> {
   const res = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
     method: "POST",
     headers: {
@@ -49,6 +64,17 @@ async function callDeepSeek(
     content: json.choices?.[0]?.message?.content ?? "",
     tokensIn: json.usage?.prompt_tokens,
     tokensOut: json.usage?.completion_tokens,
+    effectiveModel: (json as { model?: string }).model ?? model,
+    systemFingerprint: (json as { system_fingerprint?: string }).system_fingerprint ?? null,
+    rateLimit: {
+      limitRequests: res.headers.get("x-ratelimit-limit-requests"),
+      limitTokens: res.headers.get("x-ratelimit-limit-tokens"),
+      remainingRequests: res.headers.get("x-ratelimit-remaining-requests"),
+      remainingTokens: res.headers.get("x-ratelimit-remaining-tokens"),
+      resetRequests: res.headers.get("x-ratelimit-reset-requests"),
+      resetTokens: res.headers.get("x-ratelimit-reset-tokens"),
+      retryAfter: res.headers.get("retry-after"),
+    },
   };
 }
 
@@ -82,12 +108,28 @@ export async function chatJSONDeepSeek<T = unknown>(
   let errMsg: string | undefined;
   let tokensIn: number | undefined;
   let tokensOut: number | undefined;
+  let effectiveModel = model;
+  let systemFingerprint: string | null = null;
+  let rateLimit:
+    | {
+        limitRequests?: string | null;
+        limitTokens?: string | null;
+        remainingRequests?: string | null;
+        remainingTokens?: string | null;
+        resetRequests?: string | null;
+        resetTokens?: string | null;
+        retryAfter?: string | null;
+      }
+    | undefined;
 
   try {
     const first = await callDeepSeek(messages, model, temperature, apiKey);
     raw = first.content;
     tokensIn = first.tokensIn;
     tokensOut = first.tokensOut;
+    effectiveModel = first.effectiveModel ?? model;
+    systemFingerprint = first.systemFingerprint ?? null;
+    rateLimit = first.rateLimit;
     if (responsePath) atomicWrite(responsePath, raw);
 
     try {
@@ -118,18 +160,37 @@ export async function chatJSONDeepSeek<T = unknown>(
     appendAudit({
       runId: opts.runId,
       step: opts.step,
-      model,
+      provider: "deepseek",
+      requestedModel: model,
+      model: effectiveModel,
       temperature,
       promptHash,
       promptPath,
       responsePath,
       tokensIn,
       tokensOut,
+      rateLimit,
+      systemFingerprint,
       ms,
       ok,
       error: errMsg,
     });
   }
 
-  return { data: parsed as T, raw, ms: Date.now() - t0, promptHash };
+  return {
+    data: parsed as T,
+    raw,
+    ms: Date.now() - t0,
+    promptHash,
+    model,
+    effectiveModel,
+    provider: "deepseek",
+    usage: {
+      promptTokens: tokensIn,
+      completionTokens: tokensOut,
+      totalTokens: (tokensIn ?? 0) + (tokensOut ?? 0),
+    },
+    rateLimit,
+    systemFingerprint,
+  };
 }

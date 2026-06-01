@@ -9,26 +9,28 @@ import { emitRun, logRun } from "./events";
 import {
   stepFetchBaseData,
   stepDeriveMetrics,
+  stepNormalizeDataset,
   stepBuildContext,
   stepExtractFacts,
   stepAnswerSections,
   stepComputeScoreAndGate,
-  stepSummarize,
-  stepRedTeam,
+  stepComputeTimingAxis,
+  stepInterpretAnalyst,
   stepComputeFairValue,
+  stepComputeTradeSetup,
   stepGenerateVerdict,
   stepComputePeerPercentiles,
   stepPersist,
   resolveModels,
   type PipelineState,
 } from "./steps";
-import { getLLMConfig } from "@/lib/llm/config";
 
 const DATA_DIR = process.env.DATA_DIR || "./data";
 
 // Sequentielle Steps vor dem parallelen LLM-Block
 const PRE_STEPS: Array<{ key: string; label: string; pct: number; fn: (s: PipelineState) => Promise<unknown> }> = [
   { key: "fetch", label: "Datenquellen abrufen", pct: 15, fn: stepFetchBaseData },
+  { key: "normalize", label: "Dataset normalisieren", pct: 18, fn: stepNormalizeDataset },
   { key: "metrics", label: "Kennzahlen deterministisch berechnen", pct: 22, fn: stepDeriveMetrics },
   { key: "context", label: "Kontext aufbauen", pct: 30, fn: stepBuildContext },
 ];
@@ -36,10 +38,11 @@ const PRE_STEPS: Array<{ key: string; label: string; pct: number; fn: (s: Pipeli
 // Sequentielle Steps nach dem parallelen LLM-Block
 const POST_STEPS: Array<{ key: string; label: string; pct: number; fn: (s: PipelineState) => Promise<unknown> }> = [
   { key: "score",       label: "Scoring & Gate",                   pct: 70, fn: stepComputeScoreAndGate },
+  { key: "timing",      label: "Timing-Achse & Regime",            pct: 73, fn: stepComputeTimingAxis },
   { key: "peer",        label: "Peer-Percentile-Analyse",          pct: 75, fn: stepComputePeerPercentiles },
   { key: "fair_value",  label: "Fair-Value-Berechnung",            pct: 78, fn: stepComputeFairValue },
-  { key: "summary",     label: "Zusammenfassung (LLM)",            pct: 86, fn: stepSummarize },
-  { key: "redteam",     label: "Red-Team-Prüfung (LLM, bedingt)", pct: 92, fn: stepRedTeam },
+  { key: "trade_setup", label: "Trade-Setup berechnen",            pct: 84, fn: stepComputeTradeSetup },
+  { key: "analyst",     label: "KI-Analyst (optional)",            pct: 90, fn: stepInterpretAnalyst },
   { key: "verdict",     label: "Verdict-Generation (LLM)",         pct: 96, fn: stepGenerateVerdict },
   { key: "persist",     label: "Persistieren",                     pct: 100, fn: stepPersist },
 ];
@@ -66,6 +69,10 @@ export async function runPipeline(input: StartRunInput): Promise<void> {
       modelScoring: input.modelOverride?.scoring ?? defaults.scoring,
       modelSummary: input.modelOverride?.summary ?? defaults.summary,
       rawDir,
+      effectiveModels: { scoring: {} },
+      llmCalls: [],
+      auditEvents: [],
+      invalidSourceRefs: [],
     };
 
     // DB: started → running
@@ -91,29 +98,9 @@ export async function runPipeline(input: StartRunInput): Promise<void> {
     // Phase 1: sequentielle Vorbereitung
     for (const step of PRE_STEPS) await runStep(step);
 
-    // Phase 2: LLM-Phase
-    // DeepSeek kann parallel laufen; Ollama bleibt bewusst sequentiell,
-    // damit keine Warteschlange >300s entsteht (führt sonst zu "fetch failed").
-    if (getLLMConfig().provider === "deepseek") {
-      emitRun(input.runId, "step:start", { step: "extract", label: "Fakten extrahieren (LLM)" });
-      emitRun(input.runId, "step:start", { step: "sections", label: "Blöcke A–G bewerten (LLM)" });
-      const t0LLM = Date.now();
-      await Promise.all([
-        stepExtractFacts(state).then(() => {
-          emitRun(input.runId, "step:done", { step: "extract", ms: Date.now() - t0LLM, ok: true });
-          logRun(input.runId, "info", `[pipeline] extract done (${Date.now() - t0LLM}ms)`);
-        }),
-        stepAnswerSections(state).then(() => {
-          emitRun(input.runId, "step:done", { step: "sections", ms: Date.now() - t0LLM, ok: true });
-          logRun(input.runId, "info", `[pipeline] sections done (${Date.now() - t0LLM}ms)`);
-        }),
-      ]);
-      emitRun(input.runId, "progress", { pct: 70 });
-      db.update(schema.runs).set({ progress: 70 }).where(eq(schema.runs.id, input.runId)).run();
-    } else {
-      await runStep({ key: "extract", label: "Fakten extrahieren (LLM)", pct: 40, fn: stepExtractFacts });
-      await runStep({ key: "sections", label: "Blöcke A–G bewerten (LLM)", pct: 70, fn: stepAnswerSections });
-    }
+    // Phase 2: deterministische Extraktion + Rubric-Funktionen
+    await runStep({ key: "extract", label: "Fakten extrahieren (deterministisch)", pct: 40, fn: stepExtractFacts });
+    await runStep({ key: "sections", label: "Blöcke A–G bewerten (deterministisch)", pct: 70, fn: stepAnswerSections });
 
     // Phase 3: sequentielle Nachverarbeitung
     for (const step of POST_STEPS) await runStep(step);

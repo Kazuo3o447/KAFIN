@@ -1,7 +1,7 @@
 /**
  * GET /api/settings/test-llm
  * Testet den aktuell konfigurierten LLM-Provider und liefert {ok, message}.
- * Ollama: prüft ob der Dienst erreichbar ist und Modelle vorhanden sind.
+ * LM Studio: prüft ob der Dienst erreichbar ist und Modelle vorhanden sind.
  * DeepSeek: macht einen minimalen API-Call (1 Token) zur Key-Validierung.
  */
 import { NextResponse } from "next/server";
@@ -50,31 +50,29 @@ export async function GET(): Promise<NextResponse> {
     }
   }
 
-  if (cfg.provider === "openrouter") {
-    if (!cfg.openrouterApiKey) {
-      return NextResponse.json({ ok: false, message: "Kein OpenRouter API-Key konfiguriert." });
+  if (cfg.provider === "groq") {
+    if (!cfg.groqApiKey) {
+      return NextResponse.json({ ok: false, message: "Kein Groq API-Key konfiguriert." });
     }
     try {
-      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${cfg.openrouterApiKey}`,
-          "HTTP-Referer": "https://kafin.local",
-          "X-Title": "Kafin Research",
+          Authorization: `Bearer ${cfg.groqApiKey}`,
         },
         body: JSON.stringify({
-          model: cfg.openrouterModel || "openrouter/free",
+          model: cfg.groqModel || "meta-llama/llama-4-scout-17b-16e-instruct",
           messages: [{ role: "user", content: "Hi" }],
           max_tokens: 1,
         }),
-        signal: AbortSignal.timeout(20_000),
+        signal: AbortSignal.timeout(15_000),
       });
       if (res.ok) {
         const json = (await res.json()) as { model?: string };
         return NextResponse.json({
           ok: true,
-          message: `OpenRouter verbunden · Modell: ${json.model ?? cfg.openrouterModel}`,
+          message: `Groq verbunden · Modell: ${json.model ?? cfg.groqModel}`,
         });
       }
       const bodyText = await res.text();
@@ -89,23 +87,23 @@ export async function GET(): Promise<NextResponse> {
     }
   }
 
-  // Ollama
-  const baseUrl = (process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/$/, "");
+  // LM Studio
+  const baseUrl = (process.env.LM_STUDIO_BASE_URL || process.env.OLLAMA_BASE_URL || "http://localhost:1234").replace(/\/$/, "");
   try {
-    const res = await fetch(`${baseUrl}/api/tags`, {
+    const res = await fetch(`${baseUrl}/v1/models`, {
       cache: "no-store",
       signal: AbortSignal.timeout(5_000),
     });
     if (!res.ok) {
-      return NextResponse.json({ ok: false, message: `Ollama HTTP ${res.status}` });
+      return NextResponse.json({ ok: false, message: `LM Studio HTTP ${res.status}` });
     }
-    const json = (await res.json()) as { models?: unknown[] };
-    const count = json.models?.length ?? 0;
+    const json = (await res.json()) as { data?: unknown[] };
+    const count = json.data?.length ?? 0;
     if (count === 0) {
-      return NextResponse.json({ ok: false, message: "Ollama erreichbar, aber keine Modelle installiert." });
+      return NextResponse.json({ ok: false, message: "LM Studio erreichbar, aber keine Modelle installiert." });
     }
-    return NextResponse.json({ ok: true, message: `Ollama erreichbar · ${count} Modell(e)` });
+    return NextResponse.json({ ok: true, message: `LM Studio erreichbar · ${count} Modell(e)` });
   } catch (e) {
-    return NextResponse.json({ ok: false, message: `Ollama nicht erreichbar: ${(e as Error).message}` });
+    return NextResponse.json({ ok: false, message: `LM Studio nicht erreichbar: ${(e as Error).message}` });
   }
 }

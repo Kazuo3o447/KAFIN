@@ -87,7 +87,7 @@ export async function renderReportPptx(report: Report): Promise<Buffer> {
     fontFace: "Inter",
   });
 
-  s1.addText(String(Math.round(report.growth_research_score)), {
+  s1.addText(String(Math.round(report.growth_research_score ?? 0)), {
     x: 0.5,
     y: 3.5,
     w: 4,

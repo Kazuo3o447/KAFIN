@@ -5,6 +5,7 @@
  */
 import YahooFinance from "yahoo-finance2";
 import type { DataProvider, ProviderContext, ProviderResult, ProviderFact } from "./types";
+import type { Capability, DataProviderV2, ProviderFetchResultV2 } from "./types";
 
 // yahoo-finance2 v3 zeigt Notices; via setGlobalConfig stumm schalten
 const yahooFinance = new YahooFinance();
@@ -139,6 +140,307 @@ export const yahooProvider: DataProvider = {
       const msg = err instanceof Error ? err.message : String(err);
       log(`yahoo: ERROR ${msg}`);
       return { provider: "yahoo", ok: false, facts, raw, error: msg, durationMs: Date.now() - start };
+    }
+  },
+};
+
+function num(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return null;
+}
+
+function extractSummary<T extends Record<string, unknown>>(summary: Record<string, unknown> | undefined, key: string): T {
+  const rec = summary?.[key];
+  return (typeof rec === "object" && rec !== null ? rec : {}) as T;
+}
+
+export const yahooProviderV2: DataProviderV2 = {
+  name: "yahoo",
+  capabilities: [
+    "fundamentals_annual",
+    "fundamentals_quarterly",
+    "prices",
+    "short_interest",
+    "analyst",
+    "institutional",
+    "segments",
+    "symbol_resolution",
+    "macro",
+  ],
+  available: () => true,
+  priorityByCapability: {
+    fundamentals_annual: 2,
+    fundamentals_quarterly: 2,
+    prices: 1,
+    short_interest: 1,
+    analyst: 1,
+    institutional: 3,
+    segments: 2,
+    symbol_resolution: 3,
+    macro: 2,
+  },
+  async fetch(cap: Capability, ctx: ProviderContext): Promise<ProviderFetchResultV2> {
+    const start = Date.now();
+    const baseUrl = URL_QUOTE(ctx.ticker);
+    try {
+      if (cap === "prices") {
+        const period1 = new Date();
+        period1.setFullYear(period1.getFullYear() - 4);
+        const history = (await yahooFinance.historical(ctx.ticker, {
+          period1,
+          interval: "1d",
+        })) as Array<{ date: Date; close?: number; volume?: number }>;
+        const quoteRaw = await yahooFinance.quote(ctx.ticker, {}, { validateResult: false });
+        const quote = quoteRaw as Record<string, unknown>;
+        return {
+          provider: "yahoo",
+          capability: cap,
+          ok: true,
+          data: {
+            currency: typeof quote.currency === "string" ? quote.currency : null,
+            daily: history
+              .filter((d) => typeof d.close === "number")
+              .map((d) => ({
+                date: d.date.toISOString().slice(0, 10),
+                close: d.close as number,
+                volume: typeof d.volume === "number" ? d.volume : null,
+              })),
+          },
+          provenance: [{ source: "yahoo", url: baseUrl, klass: "B", asOf: ctx.runDate, stale: false }],
+          raw: [{ name: "yahoo_prices.json", contentType: "application/json", data: history }],
+          durationMs: Date.now() - start,
+        };
+      }
+
+      const modules = [
+        "financialData",
+        "defaultKeyStatistics",
+        "summaryDetail",
+        "summaryProfile",
+        "price",
+        "earnings",
+        "incomeStatementHistory",
+        "incomeStatementHistoryQuarterly",
+        "balanceSheetHistory",
+        "balanceSheetHistoryQuarterly",
+        "cashflowStatementHistory",
+        "cashflowStatementHistoryQuarterly",
+      ] as const;
+      const summaryRaw = await yahooFinance.quoteSummary(
+        ctx.ticker,
+        { modules: [...modules] },
+        { validateResult: false },
+      );
+      const summary = summaryRaw as Record<string, unknown>;
+
+      if (cap === "fundamentals_annual" || cap === "fundamentals_quarterly") {
+        const isQuarterly = cap === "fundamentals_quarterly";
+        const income = extractSummary<Record<string, unknown>>(summary, isQuarterly ? "incomeStatementHistoryQuarterly" : "incomeStatementHistory");
+        const balance = extractSummary<Record<string, unknown>>(summary, isQuarterly ? "balanceSheetHistoryQuarterly" : "balanceSheetHistory");
+        const cashflow = extractSummary<Record<string, unknown>>(summary, isQuarterly ? "cashflowStatementHistoryQuarterly" : "cashflowStatementHistory");
+
+        const incomeRows = Array.isArray(income.incomeStatementHistory)
+          ? (income.incomeStatementHistory as Array<Record<string, unknown>>)
+          : [];
+        const balanceRows = Array.isArray(balance.balanceSheetStatements)
+          ? (balance.balanceSheetStatements as Array<Record<string, unknown>>)
+          : [];
+        const cashRows = Array.isArray(cashflow.cashflowStatements)
+          ? (cashflow.cashflowStatements as Array<Record<string, unknown>>)
+          : [];
+
+        const byDate = new Map<string, Record<string, unknown>>();
+        for (const row of incomeRows) {
+          const date = typeof row.endDate === "string" ? row.endDate : typeof row.endDate === "object" && row.endDate && typeof (row.endDate as Record<string, unknown>).fmt === "string" ? String((row.endDate as Record<string, unknown>).fmt) : null;
+          if (!date) continue;
+          byDate.set(date, {
+            periodEnd: date,
+            revenue: num(row.totalRevenue),
+            grossProfit: num(row.grossProfit),
+            ebit: num(row.operatingIncome),
+            ebitda: num(row.ebitda),
+            netIncome: num(row.netIncome),
+            interestExpense: num(row.interestExpense),
+            researchAndDevelopment: num(row.researchDevelopment),
+            stockBasedComp: num(row.stockBasedCompensation),
+            sharesDiluted: num(row.dilutedAverageShares),
+            dividendPerShare: num(row.dividendPerShare),
+          });
+        }
+        for (const row of balanceRows) {
+          const date = typeof row.endDate === "string" ? row.endDate : typeof row.endDate === "object" && row.endDate && typeof (row.endDate as Record<string, unknown>).fmt === "string" ? String((row.endDate as Record<string, unknown>).fmt) : null;
+          if (!date) continue;
+          const prev = byDate.get(date) ?? { periodEnd: date };
+          byDate.set(date, {
+            ...prev,
+            totalDebt: num(row.totalDebt),
+            cashAndEquivalents: num(row.cash),
+            totalEquity: num(row.stockholdersEquity),
+            totalAssets: num(row.totalAssets),
+            inventory: num(row.inventory),
+            accountsReceivable: num(row.netReceivables),
+          });
+        }
+        for (const row of cashRows) {
+          const date = typeof row.endDate === "string" ? row.endDate : typeof row.endDate === "object" && row.endDate && typeof (row.endDate as Record<string, unknown>).fmt === "string" ? String((row.endDate as Record<string, unknown>).fmt) : null;
+          if (!date) continue;
+          const prev = byDate.get(date) ?? { periodEnd: date };
+          const ocf = num(row.totalCashFromOperatingActivities);
+          const capex = num(row.capitalExpenditures);
+          byDate.set(date, {
+            ...prev,
+            operatingCashflow: ocf,
+            capex,
+            freeCashflow: ocf !== null && capex !== null ? ocf + capex : null,
+            shareRepurchases: num(row.repurchaseOfStock),
+          });
+        }
+
+        return {
+          provider: "yahoo",
+          capability: cap,
+          ok: true,
+          data: Array.from(byDate.values()).sort((a, b) => String(a.periodEnd).localeCompare(String(b.periodEnd))),
+          provenance: [{ source: "yahoo", url: baseUrl, klass: "B", asOf: ctx.runDate, stale: false }],
+          raw: [{ name: `yahoo_${cap}.json`, contentType: "application/json", data: { income, balance, cashflow } }],
+          durationMs: Date.now() - start,
+        };
+      }
+
+      if (cap === "short_interest") {
+        const stats = extractSummary<Record<string, unknown>>(summary, "defaultKeyStatistics");
+        return {
+          provider: "yahoo",
+          capability: cap,
+          ok: true,
+          data: {
+            pctOfFloat: num(stats.shortPercentOfFloat),
+            daysToCover: num(stats.shortRatio),
+            sharesShort: num(stats.sharesShort),
+            trend: null,
+            asOf: ctx.runDate,
+          },
+          provenance: [{ source: "yahoo", url: baseUrl, klass: "B", asOf: ctx.runDate, stale: false }],
+          raw: [{ name: "yahoo_short_interest.json", contentType: "application/json", data: stats }],
+          durationMs: Date.now() - start,
+        };
+      }
+
+      if (cap === "analyst") {
+        const fin = extractSummary<Record<string, unknown>>(summary, "financialData");
+        const detail = extractSummary<Record<string, unknown>>(summary, "summaryDetail");
+        return {
+          provider: "yahoo",
+          capability: cap,
+          ok: true,
+          data: {
+            count: num(fin.numberOfAnalystOpinions),
+            recommendationMean: num(fin.recommendationMean),
+            targetMean: num(fin.targetMeanPrice),
+            targetHigh: num(fin.targetHighPrice) ?? num(detail.targetHighPrice),
+            targetLow: num(fin.targetLowPrice) ?? num(detail.targetLowPrice),
+            upgrades3m: null,
+            downgrades3m: null,
+          },
+          provenance: [{ source: "yahoo", url: baseUrl, klass: "B", asOf: ctx.runDate, stale: false }],
+          raw: [{ name: "yahoo_analyst.json", contentType: "application/json", data: { fin, detail } }],
+          durationMs: Date.now() - start,
+        };
+      }
+
+      if (cap === "institutional") {
+        const stats = extractSummary<Record<string, unknown>>(summary, "defaultKeyStatistics");
+        const quoteRaw = await yahooFinance.quote(ctx.ticker, {}, { validateResult: false });
+        const quote = quoteRaw as Record<string, unknown>;
+        return {
+          provider: "yahoo",
+          capability: cap,
+          ok: true,
+          data: {
+            institutionalPctHeld: num(stats.heldPercentInstitutions),
+            institutionalQoqChangePp: null,
+            institutionalTrend: null,
+            insiderOwnershipPct: num(stats.heldPercentInsiders),
+            sharesOutstanding: num(quote.sharesOutstanding),
+            floatShares: num(stats.floatShares),
+            asOf: ctx.runDate,
+          },
+          provenance: [{ source: "yahoo", url: baseUrl, klass: "B", asOf: ctx.runDate, stale: false }],
+          raw: [{ name: "yahoo_ownership.json", contentType: "application/json", data: { stats, quote } }],
+          durationMs: Date.now() - start,
+        };
+      }
+
+      if (cap === "segments") {
+        return {
+          provider: "yahoo",
+          capability: cap,
+          ok: true,
+          data: { segments: [], saas: null },
+          provenance: [{ source: "yahoo", url: baseUrl, klass: "B", asOf: ctx.runDate, stale: false }],
+          raw: [{ name: "yahoo_segments.json", contentType: "application/json", data: {} }],
+          durationMs: Date.now() - start,
+        };
+      }
+
+      if (cap === "symbol_resolution") {
+        const quoteRaw = await yahooFinance.quote(ctx.ticker, {}, { validateResult: false });
+        const quote = quoteRaw as Record<string, unknown>;
+        return {
+          provider: "yahoo",
+          capability: cap,
+          ok: true,
+          data: {
+            ticker: ctx.ticker.toUpperCase(),
+            exchange: typeof quote.fullExchangeName === "string" ? quote.fullExchangeName : null,
+            name: typeof quote.longName === "string" ? quote.longName : typeof quote.shortName === "string" ? quote.shortName : null,
+            currency: typeof quote.currency === "string" ? quote.currency : null,
+            country: typeof quote.region === "string" ? quote.region : null,
+          },
+          provenance: [{ source: "yahoo", url: baseUrl, klass: "B", asOf: ctx.runDate, stale: false }],
+          raw: [{ name: "yahoo_symbol_resolution.json", contentType: "application/json", data: quote }],
+          durationMs: Date.now() - start,
+        };
+      }
+
+      if (cap === "macro") {
+        const vixRaw = await yahooFinance.quote("^VIX", {}, { validateResult: false });
+        const vix = vixRaw as Record<string, unknown>;
+        return {
+          provider: "yahoo",
+          capability: cap,
+          ok: true,
+          data: {
+            vix: num(vix.regularMarketPrice),
+            asOf: ctx.runDate,
+          },
+          provenance: [{ source: "yahoo", url: "https://finance.yahoo.com/quote/%5EVIX", klass: "B", asOf: ctx.runDate, stale: false }],
+          raw: [{ name: "yahoo_macro.json", contentType: "application/json", data: vix }],
+          durationMs: Date.now() - start,
+        };
+      }
+
+      return {
+        provider: "yahoo",
+        capability: cap,
+        ok: false,
+        data: null,
+        provenance: [],
+        raw: [],
+        error: "unsupported_capability",
+        durationMs: Date.now() - start,
+      };
+    } catch (err) {
+      return {
+        provider: "yahoo",
+        capability: cap,
+        ok: false,
+        data: null,
+        provenance: [],
+        raw: [],
+        error: err instanceof Error ? err.message : String(err),
+        durationMs: Date.now() - start,
+      };
     }
   },
 };

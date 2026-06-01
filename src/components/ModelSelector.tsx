@@ -1,6 +1,6 @@
 "use client";
 /**
- * ModelSelector – Dropdown für lokale Ollama-Modelle.
+ * ModelSelector – Dropdown für lokale LM-Studio-Modelle.
  * Liest /api/ollama/models. Optional `value`/`onChange` für kontrollierten Zustand.
  */
 import { useEffect, useState } from "react";
@@ -55,7 +55,7 @@ export function ModelSelector({ value, onChange, placeholder = "auto" }: Props) 
         ))}
       </select>
       {loading ? <span className="text-xs text-secondary-500">lade…</span> : null}
-      {error ? <span className="text-xs text-red-400">Ollama: {error}</span> : null}
+      {error ? <span className="text-xs text-red-400">LM Studio: {error}</span> : null}
     </div>
   );
 }

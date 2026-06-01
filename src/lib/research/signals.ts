@@ -10,6 +10,7 @@ export interface ResearchSignalInput {
   keyMetrics?: KeyMetrics;
   scoreBreakdown: Record<BlockKey, number>;
   hardBlockers: string[];
+  metricApplicability?: Record<string, { applicable?: boolean }>;
 }
 
 export interface ResearchSignals {
@@ -39,18 +40,40 @@ function isLow(value: number | null | undefined, threshold: number): boolean {
   return typeof value === "number" && value < threshold;
 }
 
+function hasPlausibilityWarning(km: KeyMetrics | undefined): string[] {
+  if (!km) return [];
+  const flags: string[] = [];
+  if (typeof km.gross_margin === "number" && (km.gross_margin > 1.05 || km.gross_margin < -0.2)) {
+    flags.push("Plausibilitaet: Gross Margin ausserhalb erwartbarer Bandbreite.");
+  }
+  if (typeof km.operating_margin === "number" && (km.operating_margin > 0.8 || km.operating_margin < -0.6)) {
+    flags.push("Plausibilitaet: Operating Margin auffaellig.");
+  }
+  if (typeof km.fcf_margin === "number" && (km.fcf_margin > 0.7 || km.fcf_margin < -0.8)) {
+    flags.push("Plausibilitaet: FCF-Marge auffaellig.");
+  }
+  if (typeof km.net_debt_to_ebitda === "number" && (km.net_debt_to_ebitda > 15 || km.net_debt_to_ebitda < -5)) {
+    flags.push("Plausibilitaet: Net Debt / EBITDA unplausibel.");
+  }
+  return flags;
+}
+
 export function deriveResearchSignals(input: ResearchSignalInput): ResearchSignals {
   const km = input.keyMetrics;
   const redFlags = new Set<string>();
   const hardBlockers = new Set(input.hardBlockers);
 
-  if (input.coverage < 0.4) redFlags.add("Daten-Coverage < 40%.");
-  if (input.confidence === "low") redFlags.add("Niedrige Daten-Confidence.");
+  if (input.coverage < 0.4) redFlags.add("Datenqualitaet: Coverage < 40% (kein negatives Urteil allein daraus).");
+  if (input.confidence === "low") redFlags.add("Datenqualitaet: niedrige Confidence.");
+  for (const flag of hasPlausibilityWarning(km)) redFlags.add(flag);
   if (isHigh(km?.share_count_growth_yoy, THRESHOLDS.share_count_growth_red_flag)) redFlags.add("Share Count Growth > 3% p.a.");
   if (isHigh(km?.sbc_to_revenue, THRESHOLDS.sbc_to_revenue_red_flag)) redFlags.add("SBC / Revenue > 10%.");
   if (isHigh(km?.net_debt_to_ebitda, THRESHOLDS.net_debt_to_ebitda_red_flag)) redFlags.add("Net Debt / EBITDA > 3.");
   if (isLow(km?.fcf_margin, 0)) redFlags.add("FCF-Marge negativ.");
-  if (typeof km?.rule_of_40 === "number" && km.rule_of_40 < THRESHOLDS.rule_of_40_floor) redFlags.add("Rule of 40 unter 40.");
+  const rule40Applicable = input.metricApplicability?.rule_of_40?.applicable !== false;
+  if (rule40Applicable && typeof km?.rule_of_40 === "number" && km.rule_of_40 < THRESHOLDS.rule_of_40_floor) {
+    redFlags.add("Rule of 40 unter 40.");
+  }
 
   // Phase A: Forensic red flags
   if (typeof km?.piotroski_f === "number" && km.piotroski_f <= THRESHOLDS.piotroski_weak) {
@@ -106,7 +129,7 @@ export function deriveResearchSignals(input: ResearchSignalInput): ResearchSigna
     isLow(km?.fcf_margin, 0) &&
     (valuation < 0.55 || risk < 0.55 || isHigh(km?.beta, 1.8));
 
-  if (hardBlockers.size > 0 || input.coverage < 0.35 || input.confidence === "low") {
+  if (hardBlockers.size > 0) {
     category = "Too Hard";
   } else if (capital < 0.5 && highDilution && strongOrVisibleGrowth) {
     category = "Dilution Trap";

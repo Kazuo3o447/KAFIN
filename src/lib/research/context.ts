@@ -100,6 +100,15 @@ const BLOCK_FIELD_HINTS: Record<BlockKey, string[]> = {
     "recommendation",
     "earnings",
   ],
+  ownership_smart_money: [
+    "insider",
+    "short",
+    "institutional",
+    "buyback",
+    "dilution",
+    "ownership",
+    "shares",
+  ],
   risk_fragility: [
     "risk",
     "beta",

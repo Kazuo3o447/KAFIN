@@ -1,0 +1,7 @@
+{
+  "data": [
+    { "period": "2026-12-31", "revenueAvg": 100000, "ebitAvg": 18000, "epsAvg": 2.1 },
+    { "period": "2027-12-31", "revenueAvg": 112000, "ebitAvg": 21000, "epsAvg": 2.4 },
+    { "period": "2028-12-31", "revenueAvg": 124000, "ebitAvg": 24000, "epsAvg": 2.8 }
+  ]
+}

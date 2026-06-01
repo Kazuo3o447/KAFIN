@@ -9,6 +9,7 @@ import { db, sqlite } from "./db";
 
 const KNOWN_TABLES = new Set([
   "reports",
+  "score_history",
   "runs",
   "watchlist",
   "settings",

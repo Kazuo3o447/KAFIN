@@ -1,0 +1,16 @@
+{
+  "netBuyUsd": 1200000,
+  "topTransactions": [
+    {
+      "insiderName": "Jane Doe",
+      "title": "Chief Executive Officer",
+      "transactionType": "P",
+      "shares": 10000,
+      "pricePerShare": 120,
+      "valueUsd": 1200000,
+      "transactionDate": "2026-04-20"
+    }
+  ],
+  "periodDays": 180,
+  "filingCount": 1
+}

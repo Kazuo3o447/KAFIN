@@ -17,7 +17,8 @@ const BLOCK_LETTERS: Record<BlockKey, string> = {
   valuation: "D",
   capital_discipline_dilution: "E",
   catalysts_revisions_sentiment: "F",
-  risk_fragility: "G",
+  ownership_smart_money: "G",
+  risk_fragility: "H",
 };
 
 /** Find auto-expand block: hard-blocker block → or weakest relative block → or null if all ≥ 75% */

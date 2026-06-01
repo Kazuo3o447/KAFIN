@@ -4,6 +4,396 @@
 
 ---
 
+## Aktueller Stand — 2026-06-01 (Update 22)
+
+**Phase:** PHASE 6C — Trader-Terminal, Trade-Setup & KI-Beraterebene.
+
+### Umgesetzt
+
+- **Trade-Setup konsequent im Pipeline-/Report-Pfad:**
+  - `trade_setup` wird im Analyst-Kontext und finalen Report-Persistenzpfad in `src/lib/orchestrator/steps.ts` durchgaengig gefuehrt.
+  - `resolveModels()` respektiert `LLM_MODEL` als globalen Default fuer die komplette Run-Kette.
+- **Analyst-Beraterebene vervollstaendigt:**
+  - Analyst ist standardmaessig aktiv, wenn nicht explizit deaktiviert (`ENABLE_ANALYST_LLM !== "0"`).
+  - Thesis/Open-Questions/Falsifikation werden im State aus den neuen Advisor-Feldern (`numbersSay`, `entryTrigger`, `exitWatchTrigger`) gespiegelt.
+- **LM-Studio Base-URL-Alias harmonisiert:**
+  - `src/lib/llm/ollama.ts` akzeptiert jetzt `LLM_BASE_URL` (vor `LM_STUDIO_BASE_URL`/`OLLAMA_BASE_URL`).
+- **Trader-Terminal UI (dicht, nicht accordion-first):**
+  - `src/app/reports/[id]/page.tsx` als kompaktes Terminal-Layout neu gebaut:
+    - 1-zeilige Statusleiste
+    - 3-Panel-Toprow (`Trade Setup`, `Verdikt`, `Markt Regime`)
+    - immer sichtbare Kennzahlen + Momentum-Reihe
+    - 3 Mini-Chart-Panels
+    - Ownership/Smart-Money-Reihe
+    - KI-Beraterblock mit expliziten Entry/Exit-Triggern
+  - Keine verpflichtenden `CollapsibleSection`-Container fuer Kerninformationen.
+
+### Neue Tests (Phase 6C)
+
+- `tests/unit/trade-setup.test.ts`
+- `tests/unit/analyst-advisor.test.ts`
+- `tests/unit/terminal-density.test.tsx`
+- `tests/unit/missing-data-inline.test.tsx`
+- `tests/unit/no-recompute.test.ts`
+- `vitest.config.ts` erweitert fuer `.test.tsx`.
+
+### AXON Referenz
+
+- Das 6C-Layout ist fuer den Trader-Workflow auf schnelle Entscheidungslesbarkeit optimiert (AXON-Referenzstil): erst Setup/Regime/Actionability, danach Details und Quellen.
+
+### Verifiziert (Update 22)
+
+- `npm run typecheck` ✅ (exit 0)
+- `npm test` ✅ (66/66 Dateien, 197/197 Tests)
+
+---
+
+## Aktueller Stand — 2026-06-01 (Update 21)
+
+**Phase:** KORREKTUR-02 — Resilienz, Versionierung & Konsistenz (Vervollstaendigung).
+
+### Umgesetzt
+
+- **Fetch-Status-Modell + Lauf-Integritaet (P0.1):**
+  - `MissingValueStatus` + Capability-Diagnostik in `src/lib/providers/types.ts`.
+  - Retry/Backoff + Statusklassifikation in `src/lib/providers/collect.ts`.
+  - `stepFetchBaseData` markiert technische Unvollstaendigkeit und setzt Retry-Empfehlung.
+  - Report-Felder `run_integrity.*` inkl. Banner und `fetch_statuses` in `src/lib/schemas/report.ts` + Persistenz.
+- **Audit-Record Versionierung/Immutability (P0.2/P0.3):**
+  - `THRESHOLDS.version/changelog`, `ASSUMPTIONS_VERSION` eingefuehrt.
+  - Report persistiert `audit_snapshot` (`codeVersion`, `thresholdSetVersion`, `assumptionsVersion`, `dataSnapshotId`, `providerVersions`, `runAt`).
+  - `score_interpretation` (`as_was` vs. `rescored_current_thresholds`) im Schema und Report-UI gekennzeichnet.
+- **Kanonische Taxonomie + Ownership-Block (P1.1):**
+  - Neuer bewerteter Block `ownership_smart_money` in Gewichten, Schema, Rubric, Lens-Profilen und Prompt-Blockliste.
+  - Kanonisches Mapping in `src/lib/scoring/taxonomy.ts`.
+- **Provider-Konfliktaufloesung (P1.2):**
+  - Deterministische Praezedenz in `src/lib/research/conflict-detector.ts`.
+  - Konfliktgewinner wird als aufgeloester Fakt injiziert; Konflikte sichtbar in `data_quality.coverage.conflictingMetrics`.
+- **Kritische Kennzahlen (P1.3):**
+  - Lens-spezifische Kritikalitaet in `src/lib/scoring/critical-metrics.ts`.
+  - Confidence-Capping und `missingCriticalMetrics` in `stepComputeScoreAndGate` verdrahtet.
+- **Skalen-/Leasing-/FX-Details (P2.1/P2.2):**
+  - x1000-Skalenverdacht in `src/lib/research/debt-breakdown.ts`.
+  - NetDebt/EBITDA im Pipeline-Override auf interest-bearing debt ausgerichtet.
+  - Periodenbezogene FX-Normalisierung in `src/lib/research/normalization.ts` (`PAIR@periodEnd`).
+- **Secrets-Hygiene (P2.4):**
+  - `src/lib/utils/secrets.ts` (Pattern-Scan + URL-Redaction).
+  - Source-URLs werden vor Persistenz tokenbereinigt.
+
+### Neue Tests
+
+- `tests/unit/fetch-status.test.ts`
+- `tests/unit/threshold-versioning.test.ts`
+- `tests/unit/taxonomy-mapping.test.ts`
+- `tests/unit/provider-conflict.test.ts`
+- `tests/unit/critical-metrics.test.ts`
+- `tests/unit/scale-lease-consistency.test.ts`
+- `tests/unit/fx-asof.test.ts`
+- `tests/unit/secrets-scan.test.ts`
+- `tests/regression/reference-companies.test.ts`
+- `vitest.config.ts` erweitert: Regression-Suite wird mitausgefuehrt.
+
+### Verifiziert (Update 21)
+
+- `npm run typecheck` ✅ (exit 0)
+- `npm test` ✅ (61/61 Dateien, 191/191 Tests)
+
+---
+
+## Aktueller Stand — 2026-06-01 (Update 19)
+
+**Phase:** Governance-Hardening — Datenintegritaet & KI-Grenzen (Grundregel ueber allen Phasen).
+
+### Umgesetzt
+
+- **Schema-Invariante Herkunft:** `src/lib/schemas/dataset.ts` validiert jetzt hart: bei `Tracked.value !== null` muss `provenance.asOf` gesetzt sein.
+- **Value-Kind Label:** `Tracked` traegt `kind` (`actual|estimate|derived|assumption`) mit Default `actual`.
+- **Annahmen zentralisiert:** `src/lib/research/assumptions.ts` (NEU) als Single Source fuer WACC-/DCF-/Fair-Value-Annahmen.
+- **Annahmen sichtbar im Report:** `src/lib/schemas/report.ts` + `src/lib/orchestrator/steps.ts` + `src/app/reports/[id]/page.tsx` fuehren und rendern Abschnitt `Annahmen`.
+- **LLM-Numerik-Grenze runtime:** `stepInterpretAnalyst` in `src/lib/orchestrator/steps.ts` prueft numerische Fingerprints vor/nach Analyst-Schritt.
+- **No-numeric-fallback Hardening:** mehrere Fallback-Koerzungen in `src/lib/{research,scoring}` fuer Kennzahlenpfade entfernt.
+- **DoD-Tests ergaenzt:**
+  - `tests/unit/provenance-required.test.ts`
+  - `tests/unit/no-numeric-fallback.test.ts`
+  - `tests/unit/llm-no-numbers.test.ts`
+  - `tests/unit/assumptions-centralized.test.ts`
+  - `tests/unit/value-kind.test.ts`
+  - `tests/unit/no-seed-in-prod.test.ts`
+
+### Hinweis
+
+- KI-Interpretation bleibt optional und klar getrennt vom deterministischen Score.
+
+---
+
+## Aktueller Stand — 2026-06-01 (Update 17)
+
+**Phase:** 6 — Research-Abschluss: Logik-Feinschliff, Dashboard & LM-Studio-Umstieg.
+
+### Vorhanden (zusätzlich zu Update 16)
+
+#### Phase-6 Logik-Feinschliff
+- **`src/lib/research/sector-baselines.ts`** (NEU): sektor-relative Baselines und Baseline-Signale.
+- **`src/lib/research/combo-signals.ts`** (NEU): deterministische Interaktionssignale und Confidence-Score.
+- **`src/lib/research/score-history.ts`** (NEU): Score-Verlauf, Trendableitung und Persistenz in `score_history`.
+- **`src/lib/storage/schema.ts`** / **`src/lib/storage/db.ts`** / **`drizzle/migrations/0002_score_history.sql`** (GEÄNDERT/NEU): neue Score-History-Tabelle.
+- **`src/lib/orchestrator/steps.ts`** (GEÄNDERT): Persistenz schreibt `market_context`, `sector_baseline_used`, `combo_flags`, `confidence_score` und `score_trend` in den Report.
+- **`src/lib/schemas/report.ts`** (GEÄNDERT): neue Report-Felder für Phase 6.
+
+#### Dashboard-Redesign
+- **`src/app/reports/[id]/page.tsx`** (GEÄNDERT): Markt-Header mit Regime/Breadth/VIX/HY-Spread, Confidence-/Trend-Panel, Formula-Summary.
+- **`src/components/ScoreTrendSparkline.tsx`** (NEU): Verlaufssparkline auf Basis der Score-Historie.
+
+#### LM-Studio-Umstieg
+- **`src/lib/llm/config.ts`** (GEÄNDERT): lokaler Default-Provider ist jetzt `lmstudio`; legacy `ollama` wird auf `lmstudio` normalisiert.
+- **`src/lib/llm/ollama.ts`** (GEÄNDERT): lokaler Client spricht den OpenAI-kompatiblen LM-Studio-Endpunkt an (`/v1/models`, `/v1/chat/completions`).
+- **`src/app/api/settings/test-llm/route.ts`** / **`src/app/settings/page.tsx`** / **`src/app/page.tsx`** / **`src/app/layout.tsx`** (GEÄNDERT): UI und Testpfad auf LM Studio umgestellt.
+
+### Verifiziert (Update 17)
+- `npm run typecheck` ✅ (exit 0)
+- `npm test` ✅ (46/46 Dateien, 160/160 Tests)
+
+### Offen / nächste wahrscheinliche Pflegepunkte
+- [docs/ARCHITECTURE.md](ARCHITECTURE.md) und [docs/MANIFEST.md](MANIFEST.md) sollten bei der nächsten Runde noch um weitere Phase-6-Schnittstellen ergänzt werden, falls zusätzliche Felder oder APIs hinzukommen.
+
+---
+
+## Aktueller Stand — 2026-06-01 (Update 15)
+
+**Phase:** 3 — Momentum, Sentiment & Marktregime + Retrofit Sektor-Router + Retrofit Reporting-Politik.
+
+### Vorhanden (zusätzlich zu Update 14)
+
+#### (A) Timing-Achse und Marktregime
+- **`src/lib/research/technicals.ts`** (NEU): SMA/EMA, 52W-Position, RSI, MACD, RS vs. Index/Sektor, ATR, realisierte Volatilität, OBV-Trend, Beta.
+- **`src/lib/research/regime.ts`** (NEU): deterministische Regime-Klassifikation `risk_on|neutral|risk_off`, inkl. Breadth-Proxy-Flag `breadthIsProxy`.
+- **`src/lib/scoring/timing.ts`** (NEU): Timing-Score (0..100), Quadrant (`kaufen|warten|spekulativ|meiden`) und regime-bewusste Aktionstabelle.
+- **`src/lib/orchestrator/pipeline.ts` / `steps.ts`** (GEÄNDERT): neuer Step `stepComputeTimingAxis`; Timing bleibt orthogonal und verändert den Fundamental-Score nicht.
+
+#### (B) Retrofit Sektor-Router (Phase-2-Korrektur)
+- **`src/lib/scoring/sector-router.ts`** (NEU): Klassifikation in `industrial_software|financials|reit|insurance|biotech_pre_revenue|commodity_cyclical`.
+- **`src/lib/scoring/engine.ts`** (GEÄNDERT): Router vorgelagert; bei inkompatiblen Klassen deterministische Markierung `notScorableWithStandardRubric` statt irreführendem Standard-Score.
+- Sektor-Raster-Stubs für spätere Erweiterung dokumentiert (`SECTOR_RUBRIC_STUBS`).
+
+#### (C) Retrofit Reporting-Politik (Phase-1-Korrektur)
+- **`src/lib/research/normalization.ts`** (NEU): `normalizeDataset()` vor Metrics/Scoring; Währungsnormalisierung, TTM aus letzten 4 Quartalen, getrennte GAAP-vs-adjusted Darstellung (SBC explizit).
+- **`src/lib/orchestrator/pipeline.ts`** (GEÄNDERT): neuer PRE-Step `stepNormalizeDataset` vor `stepDeriveMetrics`.
+
+#### Schema-/Report-Erweiterung
+- **`src/lib/schemas/report.ts`** (GEÄNDERT): neue Felder für `technicals`, `regime`, `timing_score`, `quadrant`, `action_recommendation`, `breadth_is_proxy`, `rubric_class`, `not_scorable_*`, `reporting_currency`, `gaap_vs_adjusted`.
+- **`src/lib/orchestrator/steps.ts`** (GEÄNDERT): Persistenz dieser Felder in Report JSON/MD.
+
+#### Neue Tests (Phase 3)
+- `tests/unit/technicals.test.ts`
+- `tests/unit/regime.test.ts`
+- `tests/unit/timing-orthogonality.test.ts`
+- `tests/unit/quadrant-action.test.ts`
+- `tests/unit/sector-router.test.ts`
+- `tests/unit/normalization.test.ts`
+
+### Verifiziert (Update 15)
+- `npm run typecheck` ✅ (exit 0)
+- `npm test` ✅ (40/40 Dateien, 154/154 Tests)
+- `chatJSON` im neuen Pfad `src/lib/research/**` + `src/lib/scoring/**`: keine Treffer
+
+### Hinweis zur Planänderung
+- Phase 7 (Kalibrierung/Backtest) ist als neuer separater Folge-Abschnitt eingeplant; in dieser Phase bewusst nicht umgesetzt.
+
+---
+
+## Aktueller Stand — 2026-06-01 (Update 14)
+
+**Phase:** 2 — Deterministisches Scoring (lensenbasiert, reproduzierbar, ohne LLM-Scoringpfad).
+
+### Vorhanden (zusätzlich zu Update 13)
+
+#### Deterministische Phase-2 Module
+- **`src/lib/research/estimates-signals.ts`** (NEU): SUE, Beat-Streak, Revisions-Balance.
+- **`src/lib/research/inflection.ts`** (NEU): Inflection-Flags (Marge/FCF-Turn, Acceleration, Revisions-Momentum).
+- **`src/lib/research/ownership-signals.ts`** (NEU): Cluster-Buy, Short-/Squeeze-Setup, Ownership-Score.
+- **`src/lib/research/valuation.ts`** (NEU): Regime-Erkennung (`pre_profit|cyclical|mature`) + Fair-Value-Corridor.
+- **`src/lib/scoring/lenses.ts`** (NEU): Lens-Profile, Block-Gewichte, Gate-Parameter.
+- **`src/lib/scoring/rubric-fn.ts`** (NEU): Deterministische Indikator-Funktionen inkl. `reason` + `inputs`.
+- **`src/lib/scoring/engine.ts`** (NEU): End-to-End Lens-Scoring inkl. Gate/Category, AAQS-Binary, Stability.
+
+#### Orchestrator-Integration (Scoringpfad ohne Section-LLM)
+- **`src/lib/orchestrator/steps.ts`** (GEÄNDERT):
+  - `stepFetchBaseData()` sammelt jetzt `CompanyDataset` + `MarketContext` via `gatherCompanyDataset()`/`gatherMarketContext()`.
+  - `stepAnswerSections()` nutzt deterministische Rubric-Funktionen aus `scoreCompany()` statt LLM-Section-Scoring.
+  - `stepComputeScoreAndGate()` konsumiert Lens-Ergebnis (`quality_compounder`) direkt für Score/Gate/Category.
+  - Persistenz schreibt Lens-Resultate in den Report (inkl. `valuation_regime`, `fair_value_corridor`, `inflection_flags`, `ownership_score`, `aaqs_binary`, `stability_scores`, `lens_results`).
+
+#### Schema-Erweiterung
+- **`src/lib/schemas/report.ts`** (GEÄNDERT): neue Felder für Phase 2 und erweiterte Blockindikatoren (`reason`, `inputs`).
+
+#### Neue Unit-Tests (Phase 2)
+- `tests/unit/scoring-reproducibility.test.ts`
+- `tests/unit/valuation-regime.test.ts`
+- `tests/unit/valuation-stability.test.ts`
+- `tests/unit/inflection.test.ts`
+- `tests/unit/ownership-signals.test.ts`
+- `tests/unit/rubric-fn.test.ts`
+- `tests/unit/lenses.test.ts`
+- `tests/unit/dataset-fixture.ts` (Test-Helfer)
+
+### Verifiziert (Update 14)
+- `npm run typecheck` ✅ (exit 0)
+
+### Hinweis
+- Der Scoringpfad ist jetzt deterministisch verdrahtet; LLM verbleibt für Extract/Summary/Red-Team/Detail-Texte.
+
+---
+
+## Aktueller Stand — 2026-06-01 (Update 13)
+
+**Phase:** 1 — Datenschicht V2 (typisiert, herkunftsnachverfolgbar, capability-basiert).
+
+### Vorhanden (zusätzlich zu Update 12)
+
+#### Neuer Datensatz-Vertrag (Zod)
+- **`src/lib/schemas/dataset.ts`** (NEU): `CompanyDatasetSchema` und `MarketContextSchema` inkl. `ProvenanceSchema`, `Tracked`-Werte, `CoverageReportSchema`.
+- Alle Faktenfelder sind nullable, Herkunft ist verpflichtend (`source`, `url`, `klass`, `asOf`, `stale`).
+- `MarketContext.regime` bleibt bewusst `null` (Rohwerte nur; Klassifikation in späterer Phase).
+
+#### Capability-Registry und Provider-V2
+- **`src/lib/providers/types.ts`** (GEÄNDERT): `Capability`, `DataProviderV2`, `ProviderFetchResultV2`, `SourceClassSchema` ergänzt.
+- **`src/lib/providers/index.ts`** (GEÄNDERT): zweite Registry (`ALL_PROVIDERS_V2`), `activeProvidersV2()`, capability-basierte Provider-Auswahl (`providersForCapability`).
+- Bestehende Legacy-Provider bleiben für den aktuellen Orchestrator-Pfad erhalten.
+
+#### Neue Adapter + Symbolauflösung
+- **`src/lib/providers/finnhub.ts`** (NEU): `estimates`, `earnings_history`, `insider`, `short_interest`, `analyst`, `institutional`.
+- **`src/lib/providers/fred.ts`** (NEU): `macro` mit FRED-Serien (`BAMLH0A0HYM2`, `T10Y2Y`, `VIXCLS`).
+- **`src/lib/providers/edgar-insider.ts`** (NEU): Form-4-basiertes Insider-Feed.
+- **`src/lib/providers/edgar-13f.ts`** (NEU): 13F-`asOf`-Ermittlung/Provenance (US-only, lückenbehaftet).
+- **`src/lib/providers/symbol-resolution.ts`** (NEU): Ticker/ISIN/WKN-Auflösung mit Cache (`symbol_map`), ISIN-Prüfziffervalidierung und robustem Fallback.
+
+#### Sammler (degradation chain + Raw-Persistenz)
+- **`src/lib/providers/collect.ts`** (NEU): `gatherCompanyDataset()` und `gatherMarketContext()`.
+- Capability-Ausführung per Fallback-Kette (Primär → Fallback), unabhängige Capabilities parallel via `Promise.allSettled`.
+- Rohartefakte werden unter `data/raw/{TICKER}/{runId}/...` persistiert.
+- `stale` wird deterministisch aus `THRESHOLDS.stale_data_max_months` gesetzt.
+- `coverage` wird pro Dimension + global berechnet.
+
+#### Interface-Hebung bestehender Adapter
+- **`src/lib/providers/yahoo.ts`**, **`src/lib/providers/edgar.ts`**, **`src/lib/providers/fmp.ts`**, **`src/lib/providers/alphavantage.ts`**, **`src/lib/providers/rss.ts`** (GEÄNDERT): jeweils V2-Export ergänzt.
+
+#### LLM-Faktenpfad-Bereinigung (Teilphase)
+- **`src/lib/orchestrator/steps.ts`** (GEÄNDERT): ISIN-Normalisierung auf `symbol-resolution` zentralisiert (`normalizeIsin()` wiederverwendet).
+- Kein `chatJSON`-Aufruf in den neuen Datenpfadmodulen (`providers/collect.ts`, neue V2-Adapter).
+
+#### Neue Tests + Fixtures
+- **`tests/unit/dataset-schema.test.ts`** (NEU)
+- **`tests/unit/collect-degradation.test.ts`** (NEU)
+- **`tests/unit/provenance-staleness.test.ts`** (NEU)
+- **`tests/unit/symbol-resolution.test.ts`** (NEU)
+- Fixtures unter **`tests/unit/fixtures/`**: `finnhub-estimates.json`, `fred-sample.json`, `edgar-insider-sample.json`, `edgar-13f-sample.json`.
+
+### Verifiziert (Update 13)
+- `npm run typecheck` ✅ (exit 0)
+- `npm test` ✅ (27/27 Dateien, 126/126 Tests)
+
+### Hinweise / Scope
+- Kennzahlen-Berechnung, Indikatoren, Scoring-Logik, Linsen-Entscheidungen, LLM-Interpretation und UI bleiben außerhalb dieser Phase.
+- Upgrade-Pfad für globale Paid-Ownership/Fundamentals-Provider ist dokumentiert (siehe AGENT-Update), aber nicht implementiert.
+
+---
+
+## Aktueller Stand — 2026-05-23 (Update 11)
+
+**Phase:** G — Provider-Wechsel OpenRouter → Groq, Modell-Optimierung.
+
+### Vorhanden (zusätzlich zu Update 10)
+
+#### Groq-Provider (Ersatz für OpenRouter)
+- **`src/lib/llm/groq.ts`** (NEU): OpenAI-kompatibler Client gegen `https://api.groq.com/openai/v1`. Retry/Backoff bei transienten HTTP-Fehlern und Netzwerkfehlern. Bei HTTP 429: `Retry-After`-Header + Body-Regex-Fallback werden ausgewertet, exakte Wartezeit bis max. 90 s. Kein `response_format` (Kompatibilität mit Reasoning-Modellen wie `openai/gpt-oss-120b`). `AbortSignal.timeout` 60 s als harter Cutoff.
+- **`src/lib/llm/config.ts`** (GEÄNDERT): `LLMProvider` = `"ollama" | "deepseek" | "groq"`. `LLMConfig` um `groqApiKey` / `groqModel` erweitert. DB-Keys: `groq_api_key`, `groq_model`. Default-Modell: `meta-llama/llama-4-scout-17b-16e-instruct`.
+- **`src/lib/llm/ollama.ts`** (GEÄNDERT): `chatJSON()` routet auf `chatJSONGroq` statt `chatJSONOpenRouter`.
+- **`src/app/settings/page.tsx`** (GEÄNDERT): Provider-Tab „OpenRouter" → „Groq". Placeholder `gsk_...`, Modell-Default + Docs-Link aktualisiert.
+- **`src/app/api/settings/test-llm/route.ts`** (GEÄNDERT): Konnektivitätstest gegen `api.groq.com`.
+- **`src/lib/orchestrator/steps.ts`** (GEÄNDERT): Section-Concurrency: `deepseek`=7, `ollama`/`groq`=1 (TPM-Limit-Schutz).
+
+#### Modell-Selektion
+- Analysiert: alle verfügbaren Groq-Modelle auf dem Account nach TPM, TPD, Preis, Kontext.
+- **Gewählt:** `meta-llama/llama-4-scout-17b-16e-instruct` — 30K TPM (höchstes aller Standardmodelle), 500K TPD, 128K Kontext, $0.11/$0.34 pro M Tokens, 594 TPS.
+- Verworfen: `openai/gpt-oss-120b` (nur 8K TPM, Reasoning-Overhead, Rate-Limit bei jedem Run).
+
+### Audit-Log-Befund (HIMS-Testruns)
+| Run | Modell | Ergebnis |
+|---|---|---|
+| `23b4fc35` | `openai/gpt-oss-120b` | 1/5 Steps OK — 4× TPM-429 (8K-Limit erschöpft nach Extract) |
+| `8cd615b1` | `meta-llama/llama-4-scout-17b-16e-instruct` | 10/10 Steps OK — Gesamtlaufzeit ~52 s |
+
+### Verifiziert (Update 11)
+- `npm run typecheck` ✅ (exit 0)
+- Groq-Run HIMS mit `llama-4-scout`: alle 10 Steps grün ✅
+
+---
+
+## Aktueller Stand — 2026-05-23 (Update 12)
+
+**Phase:** G.2 — Trust Layer v2, Metric Applicability, Output-Hygiene, Compile-Stabilisierung.
+
+### Vorhanden (zusätzlich zu Update 11)
+
+#### Trust Layer v2 (Pipeline)
+- **`src/lib/orchestrator/pipeline.ts`** (GEÄNDERT): Initialisiert neue Audit-/Trace-Container (`effectiveModels`, `llmCalls`, `auditEvents`, `dataQuality`) im Pipeline-State.
+- **`src/lib/orchestrator/steps.ts`** (STARK GEÄNDERT):
+  - Effective-Model-Trail pro LLM-Step (`extract`, `sections`, `summary`, `redteam`, `verdict`) inkl. Provider, requested/effective model, Token, Rate-Limit, Fingerprint.
+  - Applicability-aware Scoring: nicht anwendbare Metriken werden aus Coverage-/Signal-Bewertung ausgeschlossen.
+  - Deterministische Override-Regeln auf Indikator-Ebene (`deterministicIndicatorScore`) vor Gate-Berechnung.
+  - Data-Quality + Confidence-Caps: fehlende kritische Metriken/unsupported claims senken Confidence deterministisch.
+  - Output-Hygiene: Sanitizer + Red-Flag-Clustering vor Persistenz.
+  - Hard-Blocker-Policy als separater deterministischer Pass.
+  - Summary-/Rationale-Konsistenzprüfungen; widersprüchliche Claims werden entschärft und auditiert.
+
+#### Neue Trust-Layer-Module
+- **Research:**
+  - `src/lib/research/output-sanitizer.ts`
+  - `src/lib/research/redflag-cluster.ts`
+  - `src/lib/research/business-model-classifier.ts`
+  - `src/lib/research/metric-applicability.ts`
+  - `src/lib/research/rationale-consistency.ts`
+  - `src/lib/research/summary-consistency.ts`
+  - `src/lib/research/hard-blocker-policy.ts`
+  - `src/lib/research/reverse-dcf-classification.ts`
+  - `src/lib/research/debt-breakdown.ts`
+- **Scoring:**
+  - `src/lib/scoring/confidence-cap.ts`
+  - `src/lib/scoring/deterministic.ts`
+
+#### Schema-/Audit-Erweiterung
+- **`src/lib/schemas/report.ts`** (GEÄNDERT): Trust-Layer-v2 Felder erweitert (`models`, `data_quality`, `trader_cockpit`, zusätzliche Audit-Strukturen), `growth_research_score` nullable.
+- **`src/lib/storage/audit.ts`** (GEÄNDERT): Audit-Events enthalten Provider + requested/effective model + Rate-Limit + Fingerprint.
+- **`src/lib/research/source-validation.ts`** (GEÄNDERT): unsupported source refs werden auditierbar gemacht, aber nicht als UI-Red-Flag geleakt.
+
+#### Compile-Fixes nach Nullable/Type-Expansion
+- **`src/app/reports/[id]/page.tsx`**: null-safe Score-Prop.
+- **`src/lib/diff/report-diff.ts`**: null-safe score delta und Meta.
+- **`src/lib/export/pptx.ts`**, **`src/lib/export/xlsx.ts`**: null-safe Score-Export.
+- **`src/lib/research/fair-value.ts`**: Reverse-DCF-Klassifikationslabels mit zentralem Classifier synchronisiert (`reasonable`, `speculative`).
+- **`src/lib/llm/openrouter.ts`**: Rückgabestruktur auf erweitertes `ChatJSONResult` angehoben (Kompatibilität für Legacy-Pfade).
+
+#### Neue Unit-Tests (Trust Layer)
+- `tests/unit/metric-applicability-rule40.test.ts`
+- `tests/unit/signals-do-not-flag-non-applicable-metrics.test.ts`
+- `tests/unit/output-sanitizer-hard-blockers.test.ts`
+- `tests/unit/output-sanitizer-red-flags.test.ts`
+- `tests/unit/rationale-consistency.test.ts`
+- `tests/unit/summary-consistency-guard.test.ts`
+- `tests/unit/deterministic-scoring-overrides-llm.test.ts`
+- `tests/unit/debt-breakdown-provider-total-debt.test.ts`
+- `tests/unit/reverse-dcf-single-classifier.test.ts`
+
+Zusätzlich angepasst:
+- `tests/unit/research-pipeline.test.ts` auf audit-only Verhalten bei unsicheren Quellenreferenzen.
+
+### Verifiziert (Update 12)
+- `npm run typecheck` ✅ (exit 0)
+- `npm run lint` ✅ (keine ESLint-Warnungen/-Fehler)
+- `npm test` ✅ (23/23 Test-Dateien, 118/118 Tests)
+
+---
+
 ## Aktueller Stand — 2026-05-22 (Update 10)
 
 **Phase:** F — Fair-Value-Engine, Verdict-Generator, Decision-First Audit-Dashboard, XLSX-Export-Erweiterung.
@@ -228,11 +618,10 @@
 
 ## Nächste Schritte (priorisiert)
 
-1. **End-to-End-Run mit OpenRouter-Credits:** Sobald Account-Credits vorhanden, vollständigen Run für `HIMS` oder anderer Ticker durchführen und ISIN-Extraktion verifizieren.
-2. **ISIN-Quelle verbessern:** OpenFIGI-API oder OpenLEI als dedizierte ISIN-Quelle einbinden (Provider-Adapter, Class B), damit ISIN auch ohne LLM-Extraktion zuverlässig befüllt wird.
-3. **Provider-Robustheit:** EDGAR Throttle/Cache-Tests + yfinance-Fallback-Pfade gegen echte Tickers verifizieren.
+1. **HIMS-Akzeptanzlauf unter Groq:** Vollständigen End-to-End-Run durchführen und Audit-JSON auf `requestedModel/effectiveModel`-Trail, Rate-Limit-Metadaten und Datenqualitäts-Caps prüfen.
+2. **Trust-Layer-E2E-Absicherung:** Playwright-Szenario ergänzen, das verifiziert: keine QA-Telemetrie in Red-Flags/Hard-Blockers und konsistente Summary-Ausgabe im UI.
+3. **ISIN-Quelle verbessern:** OpenFIGI-API oder OpenLEI als dedizierte ISIN-Quelle einbinden (Provider-Adapter, Class B), damit ISIN auch ohne LLM-Extraktion zuverlässig befüllt wird.
 4. **Compare-Export:** PDF-Export der Vergleichsseite (Re-use der bestehenden Export-Pipeline mit `?print=1`).
-5. **E2E-Tests auf Stand bringen:** Smoke-Tests um Export-Dropdown und ISIN-Anzeige erweitern.
 
 ---
 
@@ -252,6 +641,7 @@
 ## Bekannte Probleme / Risiken
 
 - **JSON-Mode-Zuverlässigkeit** variiert je Ollama-Modell. Gegenmaßnahme: `parseRobustJSON` (portiert aus Pilot) + 1 Repair-Retry; ansonsten Run als `failed` markieren.
+- **Cloud-Provider-Variabilität:** Angefragtes und effektiv ausgeführtes Modell können abweichen. Gegenmaßnahme: persistenter Model-Trail im Report und in `audit.jsonl`.
 - **EDGAR Rate-Limits**: 10 req/s, User-Agent Pflicht — in Adapter implementieren (Throttle + Cache).
 - **yfinance** ist inoffiziell und bricht gelegentlich. Adapter muss defensiv parsen; Fallback FMP/AV.
 - **Long-Running Runs in Next.js**: API-Routes brauchen `runtime = 'nodejs'` + `dynamic = 'force-dynamic'` für SSE; getrennter Worker erst in Phase 2.
@@ -261,6 +651,7 @@
 
 ## Changelog
 
+- **2026-05-23 (Update 12)** — Trust Layer v2 abgeschlossen: effective-model trace, applicability-aware scoring, deterministic indicator safeguards, confidence caps, hard-blocker policy, output sanitizer + clustering, rationale/summary consistency, debt-breakdown + reverse-DCF classifier sync. Nullable-score Compile-Fixes (Report/Diff/Exports) und bestehender Pipeline-Test auf audit-only Source-Validation angepasst. Verifiziert mit `typecheck`, `lint`, `test` (118/118).
 - **2026-05-22 (Update 9)** — OpenRouter-Provider (`openrouter.ts` mit Retry/Backoff/Fallback-Chain), ISIN Ende-zu-Ende (Schema + Extraktor-Prompt + Pipeline + Dashboard), Audit-Dashboard dichter (16 KPIs, 12-Spalten-Grid, kleinere Paddings), Export-Dropdown (PPTX entfernt, JSON hinzugefügt), neuer Audit-JSON-Export-Endpoint, PDF-Ränder verkleinert, SSE-Cleanup + MaxListeners-Fix. `tsc --noEmit` ✅
 - **2026-05-22 (Update 8)** — DeepSeek-Provider-Support (`config.ts`, `deepseek.ts`), Settings-API + Einstellungsseite (Provider-Toggle, Test-Verbindung), Logs-Seite neu (runs.jsonl + audit.jsonl), SSE-Bus auf `globalThis` (Fix "warte auf Start"), Ollama `stream:true` (Fix undici headersTimeout), Pipeline parallel (Extract+Sections gleichzeitig), Context 32K→18K / 22K→12K, Rationale max 10 Wörter, Section-Concurrency 2→7. `tsc --noEmit` ✅
 - **2026-05-20 (Update 7)** — Versionsvergleich: `report-diff`-Lib + `/reports/compare/[a]/[b]`-Page (Score-Δ, Block-Δ, Indikator-Δ, Key-Metrics-Δ, Listen-Δ, Thesis vorher/nachher), Reports-Liste mit „vs. Vorgänger"-Button, Watchlist-Notes inline editierbar + Unpin. 23/23 Unit, 8/8 E2E, 18 Build-Routen.

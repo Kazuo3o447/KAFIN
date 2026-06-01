@@ -14,8 +14,27 @@ export type ConflictSeverity = "low" | "medium" | "high";
 export interface ProviderConflict {
   field: string;
   values: Array<{ provider: string; value: number }>;
+  winner: { provider: string; value: number };
   relativeSpread: number;   // (max - min) / |median|
   severity: ConflictSeverity;
+}
+
+const PROVIDER_PRECEDENCE = [
+  "sec.gov",
+  "edgar",
+  "query1.finance.yahoo.com",
+  "finance.yahoo.com",
+  "finnhub.io",
+  "financialmodelingprep.com",
+  "alphavantage.co",
+  "rss",
+  "unknown",
+] as const;
+
+function precedenceRank(provider: string): number {
+  const p = provider.toLowerCase();
+  const idx = PROVIDER_PRECEDENCE.findIndex((entry) => p.includes(entry));
+  return idx >= 0 ? idx : PROVIDER_PRECEDENCE.length;
 }
 
 /**
@@ -82,7 +101,8 @@ export function detectProviderConflicts(facts: ProviderFact[]): ProviderConflict
     if (relativeSpread >= THRESHOLDS.conflict_high_threshold) severity = "high";
     else severity = "medium";
 
-    conflicts.push({ field, values: entries, relativeSpread, severity });
+    const winner = [...entries].sort((a, b) => precedenceRank(a.provider) - precedenceRank(b.provider))[0]!;
+    conflicts.push({ field, values: entries, winner, relativeSpread, severity });
   }
 
   return conflicts.sort((a, b) => {
@@ -101,6 +121,6 @@ export function conflictsToRedFlags(conflicts: ProviderConflict[]): string[] {
     .map((c) => {
       const spread = (c.relativeSpread * 100).toFixed(0);
       const providers = c.values.map((v) => `${v.provider}: ${v.value.toFixed(2)}`).join(" vs ");
-      return `Datenwiderspruch [${c.severity.toUpperCase()}] ${c.field} (Abw. ${spread}%): ${providers}`;
+      return `Datenwiderspruch [${c.severity.toUpperCase()}] ${c.field} (Abw. ${spread}%): ${providers}. Vorrang: ${c.winner.provider}=${c.winner.value.toFixed(2)}`;
     });
 }

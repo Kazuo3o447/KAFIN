@@ -8,6 +8,7 @@ import {
 } from "./forensics";
 import { THRESHOLDS } from "./thresholds";
 import { computeReverseDCF, type ReverseDCFResult } from "./reverse-dcf";
+import type { CompanyDataset, FinancialPeriod, MarketContext } from "@/lib/schemas/dataset";
 
 export interface DerivedMetricsResult {
   metrics: Partial<KeyMetrics>;
@@ -20,6 +21,62 @@ export interface DerivedMetricsResult {
     beneish: ReturnType<typeof computeBeneishM>;
   };
   reverseDcf?: ReverseDCFResult;
+}
+
+export interface DerivedMetrics {
+  revenueCagr3y: number | null;
+  revenueCagr5y: number | null;
+  revenueCagr10y: number | null;
+  ebitCagr3y: number | null;
+  ebitCagr10y: number | null;
+  fcfCagr5y: number | null;
+  revenueAcceleration: number | null;
+  revenueCagr3yFwd: number | null;
+  ebitCagr3yFwd: number | null;
+  grossMargin: number | null;
+  operatingMargin: number | null;
+  fcfMargin: number | null;
+  grossMarginTrend: number | null;
+  operatingMarginTrend: number | null;
+  fcfMarginTrend: number | null;
+  grossMarginStddev: number | null;
+  operatingMarginStddev: number | null;
+  fcfMarginStddev: number | null;
+  roic: number | null;
+  roce: number | null;
+  roe: number | null;
+  wacc: number | null;
+  roicWaccSpread: number | null;
+  roiic: number | null;
+  cashConversion: number | null;
+  rAndDIntensity: number | null;
+  capexIntensity: number | null;
+  netDebtToEbitda: number | null;
+  interestCoverage: number | null;
+  equityRatio: number | null;
+  cashRunwayMonths: number | null;
+  accrualsRatio: number | null;
+  dilutionOverhang: number | null;
+  evSales: number | null;
+  evGrossProfit: number | null;
+  pe: number | null;
+  peg: number | null;
+  pfcf: number | null;
+  fcfYield: number | null;
+  dividendYield: number | null;
+  evEbit: number | null;
+  valuationZ: {
+    evSales: number | null;
+    evGrossProfit: number | null;
+    pe: number | null;
+    pfcf: number | null;
+  };
+  sue: number | null;
+  beatStreak: number | null;
+  revisionsBalance: number | null;
+  upsideToTargetPct: number | null;
+  guidanceTrend: "raised" | "maintained" | "lowered" | null;
+  institutionalTrend: "accumulating" | "distributing" | "flat" | null;
 }
 
 type MetricKey = keyof KeyMetrics;
@@ -462,4 +519,267 @@ export function mergeDeterministicMetrics(base: KeyMetrics, deterministic: Parti
     }
   }
   return KeyMetricsSchema.parse(merged);
+}
+
+function trackNum(period: FinancialPeriod, key: keyof FinancialPeriod): number | null {
+  const node = period[key];
+  if (typeof node === "object" && node !== null && "value" in node) {
+    const value = (node as { value: number | null }).value;
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+  return null;
+}
+
+function cagr(values: number[], years: number): number | null {
+  if (values.length <= years) return null;
+  const end = values[values.length - 1];
+  const start = values[values.length - 1 - years];
+  if (!end || !start || start <= 0 || end <= 0) return null;
+  return Math.pow(end / start, 1 / years) - 1;
+}
+
+function slope(series: number[]): number | null {
+  if (series.length < 2) return null;
+  const n = series.length;
+  const xMean = (n - 1) / 2;
+  const yMean = series.reduce((s, v) => s + v, 0) / n;
+  let num = 0;
+  let den = 0;
+  for (let i = 0; i < n; i += 1) {
+    num += (i - xMean) * (series[i]! - yMean);
+    den += (i - xMean) ** 2;
+  }
+  return den > 0 ? num / den : null;
+}
+
+function stddevN(series: number[]): number | null {
+  if (series.length < 2) return null;
+  const mean = series.reduce((s, v) => s + v, 0) / series.length;
+  const variance = series.reduce((s, v) => s + (v - mean) ** 2, 0) / (series.length - 1);
+  return Math.sqrt(variance);
+}
+
+function valuationZ(value: number | null, hist: number[]): number | null {
+  if (value === null || hist.length < 2) return null;
+  const mean = hist.reduce((s, v) => s + v, 0) / hist.length;
+  const sd = stddevN(hist);
+  if (sd === null || sd === 0) return null;
+  return (value - mean) / sd;
+}
+
+export function deriveMetricsFromDataset(
+  dataset: CompanyDataset,
+  marketContext?: MarketContext,
+): DerivedMetrics {
+  const annual = dataset.annual;
+  const quarterly = dataset.quarterly;
+
+  const revenueA = annual.map((p) => trackNum(p, "revenue")).filter((v): v is number => v !== null);
+  const ebitA = annual.map((p) => trackNum(p, "ebit")).filter((v): v is number => v !== null);
+  const fcfA = annual.map((p) => trackNum(p, "freeCashflow")).filter((v): v is number => v !== null);
+
+  const latestA = annual[annual.length - 1];
+  const prevA = annual.length > 1 ? annual[annual.length - 2] : undefined;
+
+  const revenue = latestA ? trackNum(latestA, "revenue") : null;
+  const grossProfit = latestA ? trackNum(latestA, "grossProfit") : null;
+  const ebit = latestA ? trackNum(latestA, "ebit") : null;
+  const fcf = latestA ? trackNum(latestA, "freeCashflow") : null;
+  const netIncome = latestA ? trackNum(latestA, "netIncome") : null;
+  const totalDebt = latestA ? trackNum(latestA, "totalDebt") : null;
+  const cash = latestA ? trackNum(latestA, "cashAndEquivalents") : null;
+  const totalEquity = latestA ? trackNum(latestA, "totalEquity") : null;
+  const totalAssets = latestA ? trackNum(latestA, "totalAssets") : null;
+  const interestExpense = latestA ? trackNum(latestA, "interestExpense") : null;
+  const capex = latestA ? trackNum(latestA, "capex") : null;
+  const rnd = latestA ? trackNum(latestA, "researchAndDevelopment") : null;
+  const sharesLatest = latestA ? trackNum(latestA, "sharesDiluted") : null;
+  const sharesPrev = prevA ? trackNum(prevA, "sharesDiluted") : null;
+
+  const grossMargin = revenue && grossProfit !== null ? grossProfit / revenue : null;
+  const operatingMargin = revenue && ebit !== null ? ebit / revenue : null;
+  const fcfMargin = revenue && fcf !== null ? fcf / revenue : null;
+
+  const revenueQ = quarterly.map((p) => trackNum(p, "revenue"));
+  const revenueYoYRates: number[] = [];
+  for (let i = 4; i < revenueQ.length; i += 1) {
+    const cur = revenueQ[i];
+    const prev = revenueQ[i - 4];
+    if (typeof cur === "number" && typeof prev === "number" && prev > 0) {
+      revenueYoYRates.push(cur / prev - 1);
+    }
+  }
+  const revenueAcceleration =
+    revenueYoYRates.length >= 2
+      ? revenueYoYRates[revenueYoYRates.length - 1]! - revenueYoYRates[revenueYoYRates.length - 2]!
+      : null;
+
+  const marginsFromAnnual = (field: "grossProfit" | "ebit" | "freeCashflow"): number[] =>
+    annual
+      .map((p) => {
+        const rev = trackNum(p, "revenue");
+        const val = trackNum(p, field);
+        return rev && val !== null ? val / rev : null;
+      })
+      .filter((v): v is number => v !== null);
+
+  const gmSeries = marginsFromAnnual("grossProfit");
+  const omSeries = marginsFromAnnual("ebit");
+  const fcfSeries = marginsFromAnnual("freeCashflow");
+
+  const grossMarginTrend = slope(gmSeries);
+  const operatingMarginTrend = slope(omSeries);
+  const fcfMarginTrend = slope(fcfSeries);
+
+  const investedCapital =
+    totalDebt !== null && totalEquity !== null && cash !== null ? totalDebt + totalEquity - cash : null;
+  const roic = investedCapital !== null && investedCapital > 0 && ebit !== null ? ebit * (1 - THRESHOLDS.wacc_tax_rate) / investedCapital : null;
+  const roce = totalAssets !== null && totalAssets > 0 && ebit !== null ? ebit / totalAssets : null;
+  const roe = totalEquity !== null && totalEquity > 0 && netIncome !== null ? netIncome / totalEquity : null;
+  const wacc = THRESHOLDS.wacc_risk_free_rate + THRESHOLDS.wacc_equity_risk_premium;
+  const roicWaccSpread = roic !== null ? roic - wacc : null;
+
+  const prevInvestedCapital =
+    prevA && trackNum(prevA, "totalDebt") !== null && trackNum(prevA, "totalEquity") !== null && trackNum(prevA, "cashAndEquivalents") !== null
+      ? (trackNum(prevA, "totalDebt") as number) + (trackNum(prevA, "totalEquity") as number) - (trackNum(prevA, "cashAndEquivalents") as number)
+      : null;
+  const prevEbit = prevA ? trackNum(prevA, "ebit") : null;
+  const roiic =
+    investedCapital !== null && prevInvestedCapital !== null && ebit !== null && prevEbit !== null && investedCapital !== prevInvestedCapital
+      ? ((ebit - prevEbit) * (1 - THRESHOLDS.wacc_tax_rate)) / (investedCapital - prevInvestedCapital)
+      : null;
+
+  const cashConversion = netIncome !== null && netIncome !== 0 && fcf !== null ? fcf / netIncome : null;
+  const rAndDIntensity = revenue && rnd !== null ? rnd / revenue : null;
+  const capexIntensity = revenue && capex !== null ? Math.abs(capex) / revenue : null;
+
+  const netDebt = totalDebt !== null && cash !== null ? totalDebt - cash : null;
+  const netDebtToEbitda = ebit !== null && ebit > 0 && netDebt !== null ? netDebt / ebit : null;
+  const interestCoverage = interestExpense !== null && interestExpense > 0 && ebit !== null ? ebit / interestExpense : null;
+  const equityRatio = totalAssets !== null && totalAssets > 0 && totalEquity !== null ? totalEquity / totalAssets : null;
+  const cashRunwayMonths = quarterly.length > 0
+    ? (() => {
+        const recent4 = quarterly.slice(-4);
+        const fcfSum = recent4
+          .map((p) => trackNum(p, "freeCashflow"))
+          .filter((v): v is number => v !== null)
+          .reduce((s, v) => s + v, 0);
+        if (cash === null || fcfSum >= 0) return null;
+        const monthlyBurn = Math.abs(fcfSum) / 12;
+        return monthlyBurn > 0 ? cash / monthlyBurn : null;
+      })()
+    : null;
+
+  const operatingCashflow = latestA ? trackNum(latestA, "operatingCashflow") : null;
+  const accrualsRatio =
+    netIncome !== null && operatingCashflow !== null && totalAssets !== null && totalAssets > 0
+      ? (netIncome - operatingCashflow) / totalAssets
+      : null;
+  const dilutionOverhang =
+    sharesLatest !== null && sharesPrev !== null && sharesPrev > 0 ? sharesLatest / sharesPrev - 1 : null;
+
+  const currentPrice = dataset.prices.daily.at(-1)?.close ?? null;
+  const shares = dataset.ownership.sharesOutstanding;
+  const marketCap = currentPrice !== null && shares !== null ? currentPrice * shares : null;
+  const enterpriseValue = marketCap !== null && netDebt !== null ? marketCap + netDebt : null;
+  const evSales = enterpriseValue !== null && revenue !== null && revenue > 0 ? enterpriseValue / revenue : null;
+  const evGrossProfit = enterpriseValue !== null && grossProfit !== null && grossProfit > 0 ? enterpriseValue / grossProfit : null;
+  const pe = marketCap !== null && netIncome !== null && netIncome > 0 ? marketCap / netIncome : null;
+  const pfcf = marketCap !== null && fcf !== null && fcf > 0 ? marketCap / fcf : null;
+  const fcfYield = marketCap !== null && marketCap > 0 && fcf !== null ? fcf / marketCap : null;
+  const dividendYield =
+    latestA && trackNum(latestA, "dividendPerShare") !== null && currentPrice !== null && currentPrice > 0
+      ? (trackNum(latestA, "dividendPerShare") as number) / currentPrice
+      : null;
+  const evEbit = enterpriseValue !== null && ebit !== null && ebit > 0 ? enterpriseValue / ebit : null;
+
+  const evSalesHist = annual
+    .map((p) => {
+      const rev = trackNum(p, "revenue");
+      const ebitV = trackNum(p, "ebit");
+      if (rev === null || rev <= 0 || ebitV === null) return null;
+      return rev / Math.max(Math.abs(ebitV), 1);
+    })
+    .filter((v): v is number => v !== null);
+
+  const est = dataset.estimates;
+  const revenueCagr3yFwd = est.revenueCagr3yFwd;
+  const ebitCagr3yFwd = est.ebitCagr3yFwd;
+
+  const beatSeries = dataset.earningsHistory
+    .slice(-8)
+    .map((e) => (typeof e.surprisePct === "number" ? e.surprisePct : null));
+  const validBeats = beatSeries.filter((v): v is number => v !== null);
+  const beatStreak =
+    validBeats.length > 0
+      ? [...validBeats].reverse().findIndex((v) => v <= 0) === -1
+        ? validBeats.length
+        : [...validBeats].reverse().findIndex((v) => v <= 0)
+      : null;
+  const sue = validBeats.length > 1 ? (validBeats.at(-1)! - (validBeats.reduce((s, v) => s + v, 0) / validBeats.length)) / (stddevN(validBeats) ?? 1) : null;
+
+  const revisionsBalance =
+    dataset.analyst.upgrades3m !== null && dataset.analyst.downgrades3m !== null
+      ? dataset.analyst.upgrades3m - dataset.analyst.downgrades3m
+      : null;
+  const upsideToTargetPct =
+    dataset.analyst.targetMean !== null && currentPrice !== null && currentPrice > 0
+      ? dataset.analyst.targetMean / currentPrice - 1
+      : null;
+
+  return {
+    revenueCagr3y: cagr(revenueA, 3),
+    revenueCagr5y: cagr(revenueA, 5),
+    revenueCagr10y: cagr(revenueA, 10),
+    ebitCagr3y: cagr(ebitA, 3),
+    ebitCagr10y: cagr(ebitA, 10),
+    fcfCagr5y: cagr(fcfA, 5),
+    revenueAcceleration,
+    revenueCagr3yFwd,
+    ebitCagr3yFwd,
+    grossMargin,
+    operatingMargin,
+    fcfMargin,
+    grossMarginTrend,
+    operatingMarginTrend,
+    fcfMarginTrend,
+    grossMarginStddev: stddevN(gmSeries),
+    operatingMarginStddev: stddevN(omSeries),
+    fcfMarginStddev: stddevN(fcfSeries),
+    roic,
+    roce,
+    roe,
+    wacc,
+    roicWaccSpread,
+    roiic,
+    cashConversion,
+    rAndDIntensity,
+    capexIntensity,
+    netDebtToEbitda,
+    interestCoverage,
+    equityRatio,
+    cashRunwayMonths,
+    accrualsRatio,
+    dilutionOverhang,
+    evSales,
+    evGrossProfit,
+    pe,
+    peg: pe !== null && revenueCagr3yFwd !== null && revenueCagr3yFwd > 0 ? pe / (revenueCagr3yFwd * 100) : null,
+    pfcf,
+    fcfYield,
+    dividendYield,
+    evEbit,
+    valuationZ: {
+      evSales: valuationZ(evSales, evSalesHist),
+      evGrossProfit: valuationZ(evGrossProfit, evSalesHist),
+      pe: valuationZ(pe, evSalesHist),
+      pfcf: valuationZ(pfcf, evSalesHist),
+    },
+    sue,
+    beatStreak,
+    revisionsBalance,
+    upsideToTargetPct,
+    guidanceTrend: dataset.estimates.guidanceTrend,
+    institutionalTrend: dataset.ownership.institutionalTrend,
+  };
 }

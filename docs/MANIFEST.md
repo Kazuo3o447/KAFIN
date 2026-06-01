@@ -32,14 +32,14 @@
 | ORM | **Drizzle ORM** (SQLite-Dialekt, Postgres-ready) | typesafe, migrationsfähig, Pfad zu pgvector offen |
 | Datenbank (MVP) | **SQLite** (`data/research.db`) via `better-sqlite3` | lokal, zero-config |
 | Validierung | **Zod** | Schemas für LLM-Output (§21 research.md), API-DTOs |
-| LLM | **Ollama** (lokal, `http://ollama:11434`) via `ollama` npm | Modell-Liste aus `/api/tags`, pro Run/Step wählbar |
+| LLM | **LM Studio** (lokal, `http://localhost:1234`) via OpenAI-kompatible `/v1/*`-Endpoints | Modell-Liste aus `/v1/models`, pro Run/Step wählbar |
 | Markt-/Fundamentaldaten | `yahoo-finance2` (npm), SEC EDGAR REST, RSS Parser (`rss-parser`), FMP, Alpha Vantage | Adapter-Pattern, freie Quellen zuerst |
 | Sentiment (später) | FinBERT via Ollama oder HF Inference (Phase 2) | optional |
 | Export | `pptxgenjs`, `exceljs`, `puppeteer` (PDF) | PPTX wie Pilot, PDF besser via headless Chrome |
 | Tests | `vitest` + `@testing-library/react` + `playwright` (E2E) | Standard |
 | Lint/Format | `eslint`, `prettier`, `typescript --noEmit` in CI | Standard |
 | Logging | `pino` + JSONL-Audit-Log auf Disk | strukturiert, parsebar |
-| Container | **Docker Compose**: `app` (Next.js), `ollama`, `worker` (optional, Phase 2) | reproduzierbar |
+| Container | **Docker Compose**: `app` (Next.js), `worker` (optional, Phase 2) | reproduzierbar |
 
 > **Verboten ohne Manifest-Update:** Wechsel des Frameworks, der DB, der Chart-Lib oder Hinzufügen neuer Cloud-Services.
 
@@ -78,25 +78,38 @@
 
 ---
 
-## 5. LLM-Regeln (Ollama / DeepSeek / OpenRouter)
+## 5. LLM-Regeln (LM Studio / DeepSeek / Groq)
 
-- **Drei Provider** wählbar über Einstellungsseite: `ollama` (lokal), `deepseek` (Cloud-API, OpenAI-kompatibel), `openrouter` (Cloud-API-Gateway, OpenAI-kompatibel).
+- **Drei Provider** wählbar über Einstellungsseite: `lmstudio` (lokal), `deepseek` (Cloud-API, OpenAI-kompatibel), `groq` (Cloud-Inferenz-API, OpenAI-kompatibel).
 - Provider-Konfiguration in SQLite `settings`-Tabelle. Schlüssel:
-  - `llm_provider` — `"ollama"` | `"deepseek"` | `"openrouter"`
+  - `llm_provider` — `"lmstudio"` | `"deepseek"` | `"groq"` (legacy `ollama` wird auf `lmstudio` normalisiert)
   - `deepseek_api_key`, `deepseek_model` (Default `deepseek-chat`)
-  - `openrouter_api_key`, `openrouter_model` (Default `openrouter/free`)
+  - `groq_api_key`, `groq_model` (Default `meta-llama/llama-4-scout-17b-16e-instruct`)
 - Lese-Cache 10 s via `src/lib/llm/config.ts`. Settings-Änderungen invalidieren Cache sofort.
-- **Ollama:** Modell-Liste dynamisch via `GET /api/tags`. Default = erstes geeignetes Text-LLM. Modellauswahl **nur in den Einstellungen**, nicht im Run-Dialog.
-- **Ollama Streaming:** Alle Chat-Calls mit `stream: true` — umgeht den undici `headersTimeout` von 300 s bei langsamen/großen Modellen.
+- **LM Studio:** Modell-Liste dynamisch via `GET /v1/models`. Default = erstes geeignetes Text-LLM. Modellauswahl **nur in den Einstellungen**, nicht im Run-Dialog.
+- **LM Studio Calls:** Chat-Calls gehen gegen `POST /v1/chat/completions`, mit Repair-Retry bei JSON-Parse-Fehlern.
 - **DeepSeek:** `response_format: { type: "json_object" }`. API gegen `https://api.deepseek.com`.
-- **OpenRouter:** `response_format: { type: "json_object" }`. API gegen `https://openrouter.ai/api/v1`. Retry/Backoff bei transienten Fehlern, `AbortSignal.timeout` als harter Cutoff. Fallback-Chain: konfiguriertes Modell → `openrouter/free` → `google/gemma-4-31b-it:free` → `openrouter/auto`. Section-Concurrency auf 1 begrenzt (Free-Tier-Stabilität).
-- **Jeder** LLM-Call schreibt nach `data/logs/audit.jsonl` (`run_id`, `step`, `model`, `prompt_hash`, `prompt_path`, `response_path`, `ms`, `ok`, `error`). Bei OpenRouter wird das tatsächlich verwendete Modell (nach Fallback) geloggt.
+- **Groq:** Kein `response_format` (Kompatibilität mit Reasoning-Modellen). API gegen `https://api.groq.com/openai/v1`. Retry/Backoff bei transienten Fehlern; bei HTTP 429 wird der `Retry-After`-Header ausgewertet und exakt so lange gewartet (max 90 s). Section-Concurrency auf 1 begrenzt (TPM-Limit-Schutz).
+- **Jeder** LLM-Call schreibt nach `data/logs/audit.jsonl` (`run_id`, `step`, `model`, `prompt_hash`, `prompt_path`, `response_path`, `ms`, `ok`, `error`).
 - Temperature default `0.1` für Extraktion, `0.2` für Scoring, `0.4` für Summaries.
 - Schema-Validierung via Zod. Bei Fehlschlag: 1× Repair-Retry, dann Run als `failed` — kein Silent-Fallback.
 
+## 6. Phase 6 Erweiterungen
+
+- `score_history` persistiert pro Report den Score-Verlauf mit `deltaFromPrevious` und `trend`.
+- Report-JSON enthält zusätzlich `market_context`, `sector_baseline_used`, `combo_flags`, `confidence_score` und `score_trend`.
+- Das Report-Dashboard ist decision-first und zeigt Marktregime, Breadth, VIX, High-Yield-Spread, Score-Trend und aktive Combo-Signale.
+
+## 7. Phase 6C Erweiterungen
+
+- Report-JSON enthaelt den Pflichtblock `trade_setup` mit `entry_zone_max`, `stop_ref`, `risk_reward`, `action`, `sizing_hint`.
+- Report-UI ist terminal-dicht und zeigt Setup/Regime/Kennzahlen/Ownership/Advisor-Trigger ohne Pflicht-Akkordeons.
+- Analyst-Interpretation bleibt optional und ist strikt getrennt von deterministischen numerischen Feldern.
+- Trigger- und Zahlen-Guardrails: Analyst-Texte duerfen nur auf Report-nachgewiesene Werte referenzieren.
+
 ---
 
-## 6. Scoring (research.md §9–§16)
+## 8. Scoring (research.md §9–§16)
 
 Deterministisch im **Backend** berechnet, nicht vom LLM. LLM liefert nur Sub-Indikatoren (0–10 pro Metrik mit Begründung + Quelle). Backend gewichtet:
 
@@ -107,15 +120,24 @@ Deterministisch im **Backend** berechnet, nicht vom LLM. LLM liefert nur Sub-Ind
 | C. Qualität & Moat | 18 |
 | D. Bewertung relativ zu Wachstum | 14 |
 | E. Kapitaldisziplin & Verwässerung | 12 |
-| F. Katalysatoren, Revisionen, Sentiment | 12 |
-| G. Risiko & Fragilität | 12 |
+| F. Katalysatoren, Revisionen, Sentiment | 8 |
+| G. Ownership & Smart Money | 8 |
+| H. Risiko & Fragilität | 8 |
 | **Summe** | **100** |
 
 Gate-Logik & Blocker exakt nach `research.md` §18–§20. Hard-Blocker setzen Gate = `Red` unabhängig vom Score.
 
+Zusätzliche Invarianten (Trust Layer v2):
+- **Applicability-first:** Nicht anwendbare Metriken (z. B. Rule of 40 außerhalb SaaS/Cloud-Profilen) werden aus Coverage-/Signal-Gating ausgeschlossen.
+- **Output-Hygiene:** UI-Red-Flags und Hard-Blockers werden vor Persistenz sanitisiert (keine Sentinel-/QA-Telemetrie, keine Nicht-Events, dedupliziert).
+- **Deterministische Schutzregeln:** Ausgewählte Indikatoren werden regelbasiert überschrieben, wenn LLM-Score und messbare Kennzahl konfligieren.
+- **Confidence-Caps:** Kritische Datenlücken, unsupported Claims oder Konflikte kappen die Confidence deterministisch.
+- **Score nullable:** Bei zu niedriger kritischer Datenabdeckung darf der Gesamtscore `null` sein; Gate wird dann konservativ `Red`.
+- **Model-Trail verpflichtend:** Pro LLM-Step werden `provider`, `requestedModel`, `effectiveModel` und verfügbare Token-/Rate-Limit-Metadaten persistiert.
+
 ---
 
-## 7. MVP-Scope (festgelegt)
+## 9. MVP-Scope (festgelegt)
 
 In dieser Reihenfolge:
 1. Ticker-Eingabe → Research-Run (Daten-Fetch → LLM-Extraktion → Scoring → Speicherung)
@@ -128,7 +150,7 @@ In dieser Reihenfolge:
 
 ---
 
-## 8. Pflichten zur Dokumentations-Pflege
+## 10. Pflichten zur Dokumentations-Pflege
 
 Diese vier Dateien sind **zwingend** zu pflegen:
 

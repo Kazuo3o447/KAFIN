@@ -14,26 +14,36 @@
 import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
+import { execSync } from "node:child_process";
 import { fetchAllFacts } from "@/lib/providers";
-import type { ProviderResult, ProviderFact, RawArtifact } from "@/lib/providers/types";
+import { gatherCompanyDatasetDetailed, gatherMarketContextDetailed } from "@/lib/providers/collect";
+import type {
+  CapabilityFetchDiagnostic,
+  GatherDiagnostics,
+  ProviderResult,
+  ProviderFact,
+  RawArtifact,
+} from "@/lib/providers/types";
 import { atomicWrite } from "@/lib/utils/atomic-write";
 import { chatJSON, pickDefaultModel } from "@/lib/llm/ollama";
 import { getLLMConfig } from "@/lib/llm/config";
 import {
-  EXTRACTOR_SYSTEM,
-  EXTRACTOR_USER,
-  SECTION_SYSTEM,
-  SECTION_USER,
   SECTION_BLOCKS,
-  SUMMARY_SYSTEM,
-  SUMMARY_USER,
-  REDTEAM_SYSTEM,
-  REDTEAM_USER,
   type BlockId,
 } from "@/lib/llm/prompts";
 import { computeScore, type IndicatorScore } from "@/lib/scoring/score";
 import { computeGate, canHandoffToTradeEngine, type Category } from "@/lib/scoring/gate";
 import { BLOCK_WEIGHTS, type BlockKey } from "@/lib/scoring/weights";
+import { scoreCompany, type LensScoreResult } from "@/lib/scoring/engine";
+import { evaluateCriticalCoverage } from "@/lib/scoring/critical-metrics";
+import { normalizeDataset, type NormalizationResult } from "@/lib/research/normalization";
+import { computeTechnicals, type TechnicalIndicators } from "@/lib/research/technicals";
+import { classifyMarketRegime, type RegimeResult } from "@/lib/research/regime";
+import { buildTimingOutput, type TimingOutput } from "@/lib/scoring/timing";
+import { computeEstimatesSignals } from "@/lib/research/estimates-signals";
+import { computeOwnershipSignals } from "@/lib/research/ownership-signals";
+import { interpretReport, type AnalystBlock } from "@/lib/analyst/interpret";
+import { buildAnalystEvidence } from "@/lib/analyst/evidence";
 import {
   computePiotroskiF,
   computeMohanramG,
@@ -41,27 +51,43 @@ import {
   computeBeneishM,
 } from "@/lib/research/forensics";
 import { classifyBusinessModel } from "@/lib/research/business-model";
+import { classifyBusinessModelProfile, type BusinessModelProfile } from "@/lib/research/business-model-classifier";
 import { findPeerBucket } from "@/lib/research/peer-universe";
 import { computePeerPercentiles, type PeerPercentiles } from "@/lib/research/peer-cache";
+import { deriveConfidenceScore } from "@/lib/research/combo-signals";
 import { detectProviderConflicts, conflictsToRedFlags } from "@/lib/research/conflict-detector";
 import { buildResearchContext } from "@/lib/research/context";
 import { deriveKeyMetrics, mergeDeterministicMetrics, type DerivedMetricsResult } from "@/lib/research/derived-metrics";
+import { THRESHOLDS } from "@/lib/research/thresholds";
 import { validateBlockSources } from "@/lib/research/source-validation";
 import { buildMoatAssessment, deriveResearchSignals } from "@/lib/research/signals";
+import { sanitizeInvestmentStrings } from "@/lib/research/output-sanitizer";
+import { clusterRedFlags, type RedFlagCluster } from "@/lib/research/redflag-cluster";
+import { buildMetricApplicability } from "@/lib/research/metric-applicability";
+import { findRationaleConsistencyIssues } from "@/lib/research/rationale-consistency";
+import { sanitizeSummaryClaims } from "@/lib/research/summary-consistency";
+import { buildDebtBreakdown, type DebtBreakdown } from "@/lib/research/debt-breakdown";
+import { evaluateHardBlockers } from "@/lib/research/hard-blocker-policy";
+import { applyConfidenceCaps, type DataCoverage } from "@/lib/scoring/confidence-cap";
+import { deterministicIndicatorScore } from "@/lib/scoring/deterministic";
 import { computeFairValue, type FairValueResult, type FairValueReverseDcfCheck } from "@/lib/research/fair-value";
 import { buildVerdict, sanitizeVerdictDetail, type VerdictResult } from "@/lib/research/verdict";
+import { computeTradeSetup, type TradeSetup } from "@/lib/research/trade-setup";
 import { VERDICT_DETAIL_SYSTEM, VERDICT_DETAIL_USER } from "@/lib/llm/prompts";
+import { persistScoreHistoryEntry } from "@/lib/research/score-history";
+import { ASSUMPTIONS_VERSION, DCF_ASSUMPTIONS, MODEL_ASSUMPTIONS } from "@/lib/research/assumptions";
 import {
   ReportSchema,
   type Report,
   type KeyMetrics,
   ScoreBreakdownSchema,
   KeyMetricsSchema,
-  RedTeamSchema,
-  type RedTeam,
 } from "@/lib/schemas/report";
+import type { CompanyDataset, MarketContext } from "@/lib/schemas/dataset";
 import { db, schema } from "@/lib/storage/db";
 import { logRun } from "./events";
+import { normalizeIsin } from "@/lib/providers/symbol-resolution";
+import { sanitizeUrlForAudit } from "@/lib/utils/secrets";
 
 const DATA_DIR = process.env.DATA_DIR || "./data";
 
@@ -74,7 +100,19 @@ export interface PipelineState {
   modelSummary: string;
   rawDir: string;
   providerResults?: ProviderResult[];
+  fetchDiagnostics?: CapabilityFetchDiagnostic[];
+  runIncompleteDueToTechnicalFailure?: boolean;
+  retryRecommended?: boolean;
   facts?: ProviderFact[];
+  companyDataset?: CompanyDataset;
+  normalizedDataset?: CompanyDataset;
+  normalization?: NormalizationResult;
+  marketContext?: MarketContext;
+  technicals?: TechnicalIndicators;
+  regimeResult?: RegimeResult;
+  timing?: TimingOutput;
+  analyst?: AnalystBlock | null;
+  lensResults?: Record<"quality_compounder" | "emerging_winner", LensScoreResult>;
   derivedMetrics?: Partial<KeyMetrics>;
   forensicsResult?: {
     piotroski: ReturnType<typeof computePiotroskiF>;
@@ -83,10 +121,34 @@ export interface PipelineState {
     beneish: ReturnType<typeof computeBeneishM>;
   };
   businessModelType?: string;
+  businessModelProfile?: BusinessModelProfile;
+  metricApplicability?: Record<string, unknown>;
   peerPercentiles?: PeerPercentiles;
-  redTeam?: RedTeam | null;
+  debtBreakdown?: DebtBreakdown;
+  dataQuality?: DataCoverage;
+  auditEvents?: Array<{ level: "info" | "warn" | "error"; type: string; block?: string; details?: unknown }>;
+  invalidSourceRefs?: string[];
+  redFlagsClustered?: RedFlagCluster[];
+  effectiveModels?: {
+    extract?: string;
+    scoring: Partial<Record<BlockId, string>>;
+    summary?: string;
+    redTeam?: string;
+    verdictDetail?: string;
+  };
+  llmCalls?: Array<{
+    step: string;
+    provider: string;
+    requestedModel: string;
+    model: string;
+    tokensIn?: number;
+    tokensOut?: number;
+    rateLimit?: Record<string, string | null | undefined>;
+    systemFingerprint?: string | null;
+  }>;
   reverseDcf?: DerivedMetricsResult["reverseDcf"];
   fairValue?: FairValueResult | null;
+  tradeSetup?: TradeSetup;
   verdict?: VerdictResult & { detail: string } | null;
   context?: string;
   blockContexts?: Record<BlockId, string>;
@@ -103,7 +165,7 @@ export interface PipelineState {
   keyMetrics?: KeyMetrics;
   blockResults?: Record<BlockId, BlockResult>;
   scoreBreakdown?: Record<BlockId, number>;
-  scoreTotal?: number;
+  scoreTotal?: number | null;
   coverage?: number;
   category?: Category;
   confidence?: "low" | "medium" | "high";
@@ -123,7 +185,22 @@ export interface PipelineState {
 
 export interface BlockResult {
   block: BlockId;
-  indicators: Array<{ name: string; score: number | null; rationale: string; sourceIdx: number | null }>;
+  indicators: Array<{
+    name: string;
+    score: number | null;
+    rationale: string;
+    reason?: string;
+    inputs?: string[];
+    sourceIdx: number | null;
+    scoreType?: "deterministic" | "llm_judgment" | "hybrid";
+    scoreValid?: boolean;
+    rationaleValid?: boolean;
+    sourceSupportStatus?: "supported" | "unsupported" | "not_checked" | "internal_metric";
+    metricRefs?: string[];
+    missingMetricRefs?: string[];
+    dataStatus?: "valid" | "missing_required_data" | "not_applicable" | "unsupported_claim" | "conflicting_data" | "stale_data";
+    invalidSourceRefs?: string[];
+  }>;
   confidence: "low" | "medium" | "high";
   red_flags: string[];
   hard_blockers: string[];
@@ -156,13 +233,77 @@ export async function stepFetchBaseData(state: PipelineState): Promise<void> {
   }
   state.providerResults = results;
   state.facts = results.flatMap((r) => r.facts);
+  state.fetchDiagnostics = state.fetchDiagnostics ?? [];
+
+  try {
+    const detailed = await gatherCompanyDatasetDetailed(state.ticker, {
+      asOf: state.runDate,
+      runId: state.runId,
+    });
+    state.companyDataset = detailed.dataset;
+    state.fetchDiagnostics.push(...detailed.diagnostics.capabilities);
+    if (detailed.diagnostics.incompleteDueToTechnicalFailure) {
+      state.runIncompleteDueToTechnicalFailure = true;
+      state.retryRecommended = detailed.diagnostics.retryRecommended;
+    }
+  } catch (err) {
+    log(`[providers] dataset gather failed: ${String(err)}`);
+  }
+
+  try {
+    const detailed = await gatherMarketContextDetailed({
+      asOf: state.runDate,
+      runId: state.runId,
+    });
+    state.marketContext = detailed.dataset;
+    state.fetchDiagnostics.push(...detailed.diagnostics.capabilities);
+    if (detailed.diagnostics.incompleteDueToTechnicalFailure) {
+      state.runIncompleteDueToTechnicalFailure = true;
+      state.retryRecommended = detailed.diagnostics.retryRecommended;
+    }
+  } catch (err) {
+    log(`[providers] market context gather failed: ${String(err)}`);
+  }
+
+  if (state.runIncompleteDueToTechnicalFailure) {
+    const failedCaps = (state.fetchDiagnostics ?? [])
+      .filter((d) => d.status === "fetch_failed" || d.status === "rate_limited")
+      .map((d) => `${d.capability}:${d.status}`)
+      .join(", ");
+    logRun(
+      state.runId,
+      "warn",
+      `[providers] run marked incomplete due to technical fetch failures (${failedCaps || "unknown"}); retry recommended`,
+    );
+  }
+
   log(`gesamt ${state.facts.length} Fakten aus ${results.filter((r) => r.ok).length} Quellen`);
+}
+
+// -----------------------------------------------------------
+// Step 1b: normalizeDataset (deterministic, no LLM)
+// -----------------------------------------------------------
+export async function stepNormalizeDataset(state: PipelineState): Promise<void> {
+  if (!state.companyDataset) return;
+  const normalization = normalizeDataset(state.companyDataset);
+  state.normalization = normalization;
+  state.normalizedDataset = normalization.dataset;
+  logRun(
+    state.runId,
+    "info",
+    `[normalize] reportingCurrency=${normalization.reportingCurrency} fx=${normalization.fxRateUsed}`,
+  );
 }
 
 // -----------------------------------------------------------
 // Step 2: deriveMetrics
 // -----------------------------------------------------------
 export async function stepDeriveMetrics(state: PipelineState): Promise<void> {
+  state.auditEvents = state.auditEvents ?? [];
+  state.invalidSourceRefs = state.invalidSourceRefs ?? [];
+  state.llmCalls = state.llmCalls ?? [];
+  state.effectiveModels = state.effectiveModels ?? { scoring: {} };
+
   const result = deriveKeyMetrics(state.ticker, state.runDate, state.facts ?? []);
   state.derivedMetrics = result.metrics;
   if (result.forensics) {
@@ -176,14 +317,77 @@ export async function stepDeriveMetrics(state: PipelineState): Promise<void> {
   }
   const bm = classifyBusinessModel(state.facts ?? [], state.ticker);
   state.businessModelType = bm.type;
+  state.businessModelProfile = classifyBusinessModelProfile(state.facts ?? []);
+  state.debtBreakdown = buildDebtBreakdown(state.facts ?? []);
+  if (state.debtBreakdown?.net_debt_interest_bearing != null) {
+    const ebitdaFact = (state.facts ?? [])
+      .filter((f) => f.field === "ebitda")
+      .sort((a, b) => (b.asOf ?? "").localeCompare(a.asOf ?? ""))[0];
+    const ebitda =
+      typeof ebitdaFact?.value === "number"
+        ? ebitdaFact.value
+        : typeof ebitdaFact?.value === "string"
+          ? Number(ebitdaFact.value.replace(/,/g, ""))
+          : null;
+    if (typeof ebitda === "number" && Number.isFinite(ebitda) && ebitda > 0) {
+      const netDebtToEbitda = state.debtBreakdown.net_debt_interest_bearing / ebitda;
+      state.derivedMetrics = {
+        ...(state.derivedMetrics ?? {}),
+        net_debt_to_ebitda: Number(netDebtToEbitda.toFixed(6)),
+      };
+    }
+  }
 
   // Phase E: Detect provider conflicts
   const conflicts = detectProviderConflicts(state.facts ?? []);
-  const conflictFlags = conflictsToRedFlags(conflicts);
+  const actionableConflicts = conflicts.filter((c) => c.relativeSpread > THRESHOLDS.provider_conflict_tolerance);
+  const conflictFlags = conflictsToRedFlags(actionableConflicts);
+  for (const conflict of actionableConflicts) {
+    state.facts = [
+      ...(state.facts ?? []),
+      {
+        field: conflict.field,
+        value: conflict.winner.value,
+        url: `derived:provider_conflict_resolver:${conflict.winner.provider}`,
+        title: "Resolved by provider precedence",
+        asOf: `${state.runDate}T23:59:59Z`,
+        klass: "A-",
+      },
+    ];
+  }
   if (conflictFlags.length > 0) {
-    logRun(state.runId, "warn", `[conflicts] ${conflicts.length} conflicts detected`);
+    logRun(state.runId, "warn", `[conflicts] ${actionableConflicts.length} conflicts detected`);
     // Pre-populate redFlags so stepComputeScoreAndGate can merge them
     state.redFlags = [...(state.redFlags ?? []), ...conflictFlags];
+    state.auditEvents.push({
+      level: "warn",
+      type: "provider_conflict",
+      details: actionableConflicts.map((c) => ({
+        field: c.field,
+        severity: c.severity,
+        values: c.values,
+        winner: c.winner,
+      })),
+    });
+    state.dataQuality = state.dataQuality ?? {
+      keyMetricCoverage: 0,
+      criticalMetricCoverage: 0,
+      indicatorScoreCoverage: 0,
+      sourceSupportCoverage: 0,
+      providerCrossCheckCoverage: 0,
+      applicabilityAdjustedCoverage: 0,
+      missingCriticalMetrics: [],
+      notApplicableMetrics: [],
+      unsupportedClaims: [],
+      conflictingMetrics: [],
+    };
+    state.dataQuality.conflictingMetrics = [
+      ...(state.dataQuality.conflictingMetrics ?? []),
+      ...actionableConflicts.map((c) => {
+        const values = c.values.map((v) => `${v.provider}=${v.value}`).join(" | ");
+        return `${c.field}: ${values}; winner=${c.winner.provider}`;
+      }),
+    ];
   }
 
   logRun(
@@ -214,22 +418,6 @@ export async function stepBuildContext(state: PipelineState): Promise<void> {
 // -----------------------------------------------------------
 // Step 3: extractFacts (LLM)
 // -----------------------------------------------------------
-interface ExtractorOutput {
-  company_name: string | null;
-  isin: string | null;
-  exchange: string | null;
-  sector: string | null;
-  industry: string | null;
-  key_metrics: Partial<KeyMetrics>;
-  facts?: Array<{ field: string; value: unknown; sourceIdx: number }>;
-}
-
-function normalizeIsin(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const normalized = value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
-  return /^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(normalized) ? normalized : null;
-}
-
 function extractIsinFromFacts(facts: ProviderFact[] | undefined): string | null {
   if (!facts || facts.length === 0) return null;
   const isinPattern = /\b[A-Z]{2}[A-Z0-9]{9}[0-9]\b/g;
@@ -255,44 +443,19 @@ function extractIsinFromFacts(facts: ProviderFact[] | undefined): string | null 
 }
 
 export async function stepExtractFacts(state: PipelineState): Promise<void> {
-  const { data } = await chatJSON<ExtractorOutput>({
-    runId: state.runId,
-    step: "extract",
-    model: state.modelExtract,
-    system: EXTRACTOR_SYSTEM,
-    user: EXTRACTOR_USER(state.ticker, state.context ?? ""),
-    temperature: 0.1,
-    artifactsDir: state.rawDir,
-  });
-  const extractedIsin = normalizeIsin(data.isin);
+  const dataset = state.normalizedDataset ?? state.companyDataset;
+  const extractedIsin = normalizeIsin(dataset?.identity.isin ?? null);
   const fallbackIsin = extractIsinFromFacts(state.facts);
   state.identity = {
-    company_name: data.company_name ?? "",
+    company_name: dataset?.identity.name ?? "",
     isin: extractedIsin ?? fallbackIsin ?? "",
-    exchange: data.exchange ?? "",
-    sector: data.sector ?? "",
-    industry: data.industry ?? "",
+    exchange: dataset?.identity.exchange ?? "",
+    sector: dataset?.identity.sector ?? "",
+    industry: dataset?.identity.industry ?? "",
   };
-  // Validate KeyMetrics: füllt fehlende Felder mit null
-  const km = KeyMetricsSchema.parse({
-    revenue_growth_yoy: data.key_metrics?.revenue_growth_yoy ?? null,
-    revenue_cagr_3y: data.key_metrics?.revenue_cagr_3y ?? null,
-    gross_margin: data.key_metrics?.gross_margin ?? null,
-    operating_margin: data.key_metrics?.operating_margin ?? null,
-    fcf_margin: data.key_metrics?.fcf_margin ?? null,
-    roic: data.key_metrics?.roic ?? null,
-    rule_of_40: data.key_metrics?.rule_of_40 ?? null,
-    rule_of_x: data.key_metrics?.rule_of_x ?? null,
-    share_count_growth_yoy: data.key_metrics?.share_count_growth_yoy ?? null,
-    sbc_to_revenue: data.key_metrics?.sbc_to_revenue ?? null,
-    net_debt_to_ebitda: data.key_metrics?.net_debt_to_ebitda ?? null,
-    beta: data.key_metrics?.beta ?? null,
-    ntm_pe: data.key_metrics?.ntm_pe ?? null,
-    ev_sales: data.key_metrics?.ev_sales ?? null,
-    ev_gross_profit: data.key_metrics?.ev_gross_profit ?? null,
-    peg: data.key_metrics?.peg ?? null,
-  });
+  const km = KeyMetricsSchema.parse({});
   state.keyMetrics = mergeDeterministicMetrics(km, state.derivedMetrics);
+  logRun(state.runId, "info", "[extract] deterministic identity + key metrics hydrated from dataset/derived metrics");
 }
 
 // -----------------------------------------------------------
@@ -330,6 +493,26 @@ function sanitizeBlockResult(block: (typeof SECTION_BLOCKS)[number], data: Parti
           score: clampScore(i.score),
           rationale: String(i.rationale ?? ""),
           sourceIdx: typeof i.sourceIdx === "number" && Number.isInteger(i.sourceIdx) ? i.sourceIdx : null,
+          scoreType: i.scoreType === "deterministic" || i.scoreType === "hybrid" ? i.scoreType : "llm_judgment",
+          scoreValid: i.scoreValid ?? true,
+          rationaleValid: i.rationaleValid ?? true,
+          sourceSupportStatus:
+            i.sourceSupportStatus === "supported" ||
+            i.sourceSupportStatus === "unsupported" ||
+            i.sourceSupportStatus === "internal_metric"
+              ? i.sourceSupportStatus
+              : "not_checked",
+          metricRefs: Array.isArray(i.metricRefs) ? i.metricRefs.map(String) : [],
+          missingMetricRefs: Array.isArray(i.missingMetricRefs) ? i.missingMetricRefs.map(String) : [],
+          dataStatus:
+            i.dataStatus === "missing_required_data" ||
+            i.dataStatus === "not_applicable" ||
+            i.dataStatus === "unsupported_claim" ||
+            i.dataStatus === "conflicting_data" ||
+            i.dataStatus === "stale_data"
+              ? i.dataStatus
+              : "valid",
+          invalidSourceRefs: Array.isArray(i.invalidSourceRefs) ? i.invalidSourceRefs.map(String) : [],
         }))
       : [],
     confidence: data.confidence === "low" || data.confidence === "high" ? data.confidence : "medium",
@@ -342,94 +525,137 @@ function sanitizeBlockResult(block: (typeof SECTION_BLOCKS)[number], data: Parti
 }
 
 export async function stepAnswerSections(state: PipelineState): Promise<void> {
-  const provider = getLLMConfig().provider;
-  // Nur DeepSeek stabil mit hoher Parallelität; Ollama/OpenRouter single-flight.
-  const sectionConcurrency = provider === "deepseek" ? 7 : 1;
-  const blockResults = await runWithConcurrency(SECTION_BLOCKS as unknown as Array<typeof SECTION_BLOCKS[number]>, sectionConcurrency, async (block) => {
-    const { data } = await chatJSON<BlockResult>({
-      runId: state.runId,
-      step: `section_${block.id}`,
-      model: state.modelScoring,
-      system: SECTION_SYSTEM,
-      user: SECTION_USER(
-        { id: block.id, label: block.label },
-        state.ticker,
-        state.blockContexts?.[block.id] ?? state.context ?? "",
-      ),
-      temperature: 0.2,
-      artifactsDir: state.rawDir,
-    });
-    const sanitized = sanitizeBlockResult(block, data);
-    const checked = validateBlockSources(sanitized, state.sourceEvidence ?? new Map());
-    if (checked.invalid_source_refs.length > 0) {
-      logRun(
-        state.runId,
-        "warn",
-        `[sources] ${block.id}: ${checked.invalid_source_refs.length} unsichere Referenzen entfernt`,
-      );
-    }
-    return checked;
-  });
+  const dataset = state.normalizedDataset ?? state.companyDataset;
+  if (!dataset) {
+    state.blockResults = {} as Record<BlockId, BlockResult>;
+    logRun(state.runId, "warn", "[sections] no CompanyDataset available for deterministic scoring");
+    return;
+  }
+
+  const quality = scoreCompany(dataset, "quality_compounder", state.marketContext);
+  const emerging = scoreCompany(dataset, "emerging_winner", state.marketContext);
+  state.lensResults = {
+    quality_compounder: quality,
+    emerging_winner: emerging,
+  };
+
+  const active = quality;
   const map = {} as Record<BlockId, BlockResult>;
-  for (const r of blockResults) map[r.block] = r;
+  for (const block of SECTION_BLOCKS) {
+    const indicators = active.indicatorDetails[block.id] ?? [];
+    map[block.id] = {
+      block: block.id,
+      indicators: indicators.map((i) => ({
+        name: i.key,
+        score: i.value,
+        rationale: i.reason,
+        sourceIdx: null,
+        scoreType: "deterministic",
+        scoreValid: typeof i.value === "number",
+        rationaleValid: true,
+        sourceSupportStatus: "internal_metric",
+        metricRefs: i.inputs,
+        missingMetricRefs: [],
+        dataStatus: typeof i.value === "number" ? "valid" : "missing_required_data",
+        invalidSourceRefs: [],
+        reason: i.reason,
+        inputs: i.inputs,
+      })),
+      confidence: active.coverage >= THRESHOLDS.coverage_floor ? "high" : "medium",
+      red_flags: [],
+      hard_blockers: [],
+      moat_rating: null,
+      moat_evidence: [],
+      moat_threats: [],
+    };
+  }
+
   state.blockResults = map;
+  logRun(state.runId, "info", "[sections] deterministic rubric functions executed for both lenses");
 }
 
 // -----------------------------------------------------------
 // Step 5: computeScoreAndGate (deterministic)
 // -----------------------------------------------------------
 export async function stepComputeScoreAndGate(state: PipelineState): Promise<void> {
-  const blocks = {} as Record<BlockKey, IndicatorScore[]>;
-  const allHardBlockers: string[] = [];
-  const allRedFlags: string[] = [];
-  const confidences: string[] = [];
-
-  for (const b of SECTION_BLOCKS) {
-    const r = state.blockResults?.[b.id];
-    blocks[b.id] = (r?.indicators ?? []).map((i) => ({
-      key: i.name,
-      value: typeof i.score === "number" ? i.score : null,
-      rationale: i.rationale,
-      sourceIdx: i.sourceIdx != null ? [i.sourceIdx] : undefined,
-    }));
-    if (r?.hard_blockers) allHardBlockers.push(...r.hard_blockers);
-    if (r?.red_flags) allRedFlags.push(...r.red_flags);
-    if (r?.confidence) confidences.push(r.confidence);
+  const activeLens = state.lensResults?.quality_compounder;
+  if (activeLens) {
+    const critical = evaluateCriticalCoverage(state.keyMetrics, activeLens.lens);
+    const priorConflicts = state.dataQuality?.conflictingMetrics ?? [];
+    const defaultProfile: BusinessModelProfile = {
+      type: "Other",
+      confidence: "medium" as const,
+      evidence: [],
+      recurringRevenueLike: null,
+      assetIntensity: null,
+      regulated: null,
+      primaryFramework: "general_equity" as const,
+    };
+    state.scoreTotal = activeLens.score;
+    state.coverage = activeLens.coverage;
+    state.scoreBreakdown = activeLens.blockBreakdown as Record<BlockId, number>;
+    state.gate = activeLens.gate;
+    state.category = activeLens.category;
+    const initialConfidence = activeLens.coverage >= THRESHOLDS.coverage_floor ? "high" : "medium";
+    state.hardBlockers = activeLens.notScorableWithStandardRubric
+      ? [activeLens.notScorableReason ?? "Not scorable with standard rubric"]
+      : state.gate === "Red"
+        ? ["Deterministic lens gate triggered"]
+        : [];
+    state.redFlags = [];
+    state.redFlagsClustered = [];
+    state.dataQuality = {
+      keyMetricCoverage: activeLens.coverage,
+      criticalMetricCoverage: critical.coverage,
+      indicatorScoreCoverage: activeLens.coverage,
+      sourceSupportCoverage: 1,
+      providerCrossCheckCoverage: priorConflicts.length > 0 ? 1 : 0,
+      applicabilityAdjustedCoverage: activeLens.coverage,
+      missingCriticalMetrics: critical.missing,
+      notApplicableMetrics: [],
+      unsupportedClaims: [],
+      conflictingMetrics: priorConflicts,
+    };
+    state.confidence = applyConfidenceCaps(
+      initialConfidence,
+      state.dataQuality,
+      {
+        unsupportedCriticalClaims: [],
+        conflictingCriticalMetrics: state.dataQuality.conflictingMetrics,
+      },
+      state.businessModelProfile ?? defaultProfile,
+    );
+    if (critical.missing.length > 0) {
+      state.auditEvents = state.auditEvents ?? [];
+      state.auditEvents.push({
+        level: "warn",
+        type: "missing_critical_metrics",
+        details: { lens: activeLens.lens, missing: critical.missing },
+      });
+    }
+    logRun(
+      state.runId,
+      "info",
+      `[score] lens=${activeLens.lens} total=${state.scoreTotal} gate=${state.gate} cat=${state.category} criticalCoverage=${critical.coverage.toFixed(2)}`,
+    );
+    return;
   }
 
+  // Fallback for legacy flow (should rarely trigger once dataset scoring is active).
+  const blocks = {} as Record<BlockKey, IndicatorScore[]>;
+  for (const b of SECTION_BLOCKS) {
+    const r = state.blockResults?.[b.id];
+    blocks[b.id] = (r?.indicators ?? []).map((i) => ({ key: i.name, value: typeof i.score === "number" ? i.score : null }));
+  }
   const scored = computeScore(blocks);
   state.scoreTotal = scored.total;
   state.coverage = scored.coverage;
   state.scoreBreakdown = Object.fromEntries(
     (Object.keys(scored.blocks) as BlockKey[]).map((k) => [k, Math.round(scored.blocks[k].weighted * 100) / 100]),
   ) as Record<BlockId, number>;
-  state.hardBlockers = Array.from(new Set(allHardBlockers));
-
-  // Confidence aggregieren: Mehrheit / lowest-wins
-  const lowCount = confidences.filter((c) => c === "low").length;
-  const highCount = confidences.filter((c) => c === "high").length;
-  state.confidence =
-    confidences.length === 0
-      ? "low"
-      : lowCount > highCount
-        ? "low"
-        : highCount >= confidences.length / 2
-          ? "high"
-          : "medium";
-
-  // Category uses research.md category traps plus block-specific signals.
-  const signals = deriveResearchSignals({
-    scoreTotal: state.scoreTotal,
-    coverage: state.coverage,
-    confidence: state.confidence,
-    keyMetrics: state.keyMetrics,
-    scoreBreakdown: state.scoreBreakdown,
-    hardBlockers: state.hardBlockers,
-  });
-  state.category = signals.category;
-  state.hardBlockers = signals.hardBlockers;
-  state.redFlags = Array.from(new Set([...allRedFlags, ...signals.redFlags]));
-
+  state.category = "Transitional";
+  state.confidence = "medium";
+  state.hardBlockers = [];
   state.gate = computeGate({
     scoreTotal: state.scoreTotal,
     coverage: state.coverage,
@@ -437,96 +663,172 @@ export async function stepComputeScoreAndGate(state: PipelineState): Promise<voi
     category: state.category,
     hardBlockers: state.hardBlockers,
   });
+}
+
+// -----------------------------------------------------------
+// Step 5b: timing axis (deterministic, orthogonal to fundamental score)
+// -----------------------------------------------------------
+export async function stepComputeTimingAxis(state: PipelineState): Promise<void> {
+  const dataset = state.normalizedDataset ?? state.companyDataset;
+  const active = state.lensResults?.quality_compounder;
+  if (!dataset || !active) return;
+
+  const price = dataset.prices.daily;
+  let benchmark = price;
+  let sectorBenchmark = price;
+
+  const sectorToEtf = (sector: string | null | undefined): string => {
+    const s = (sector ?? "").toLowerCase();
+    if (s.includes("technology")) return "XLK";
+    if (s.includes("financial")) return "XLF";
+    if (s.includes("health")) return "XLV";
+    if (s.includes("energy")) return "XLE";
+    if (s.includes("real estate")) return "XLRE";
+    if (s.includes("materials")) return "XLB";
+    if (s.includes("consumer discretionary")) return "XLY";
+    if (s.includes("consumer staples")) return "XLP";
+    if (s.includes("industrial")) return "XLI";
+    if (s.includes("communication")) return "XLC";
+    if (s.includes("utilities")) return "XLU";
+    return "SPY";
+  };
+
+  try {
+    const idx = await gatherCompanyDatasetDetailed("SPY", {
+      asOf: state.runDate,
+      runId: `${state.runId}_timing_index`,
+    });
+    if (idx.dataset.prices.daily.length > 0) benchmark = idx.dataset.prices.daily;
+  } catch {
+    // deterministic fallback uses company series
+  }
+
+  try {
+    const sector = await gatherCompanyDatasetDetailed(sectorToEtf(dataset.identity.sector), {
+      asOf: state.runDate,
+      runId: `${state.runId}_timing_sector`,
+    });
+    if (sector.dataset.prices.daily.length > 0) sectorBenchmark = sector.dataset.prices.daily;
+  } catch {
+    // deterministic fallback uses company series
+  }
+
+  state.technicals = computeTechnicals({
+    price,
+    benchmark,
+    sectorBenchmark,
+  });
+
+  if (state.marketContext) {
+    const proxy =
+      state.marketContext.breadthPctAboveMa200 ??
+      (typeof state.marketContext.indexVsMa200Pct === "number"
+        ? Math.max(0, Math.min(1, 0.5 + state.marketContext.indexVsMa200Pct * 2))
+        : null);
+    state.regimeResult = classifyMarketRegime({
+      marketContext: state.marketContext,
+      breadthProxy: proxy,
+    });
+  }
+
+  const estimatesSignals = computeEstimatesSignals(dataset);
+  const ownershipSignals = computeOwnershipSignals(dataset);
+  state.timing = buildTimingOutput(
+    active,
+    {
+      technicals: state.technicals,
+      estimatesSignals,
+      ownershipSignals: {
+        squeezeSetup: ownershipSignals.squeezeSetup,
+        shortRisk: ownershipSignals.shortRisk,
+      },
+    },
+    state.regimeResult?.regime ?? "neutral",
+  );
 
   logRun(
     state.runId,
     "info",
-    `[score] total=${state.scoreTotal} gate=${state.gate} cat=${state.category} cov=${state.coverage.toFixed(2)}`,
+    `[timing] score=${state.timing.timingScore.toFixed(1)} quadrant=${state.timing.quadrant.label} regime=${state.regimeResult?.regime ?? "neutral"}`,
   );
 }
 
 // -----------------------------------------------------------
-// Step 6: summarize (LLM)
+// Step 6: analyst interpretation (optional, non-blocking)
 // -----------------------------------------------------------
-export async function stepSummarize(state: PipelineState): Promise<void> {
-  const { data } = await chatJSON<NonNullable<PipelineState["thesis"]>>({
-    runId: state.runId,
-    step: "summary",
-    model: state.modelSummary,
-    system: SUMMARY_SYSTEM,
-    user: SUMMARY_USER(state.ticker, state.category ?? "Transitional", state.scoreTotal ?? 0, state.context ?? ""),
-    temperature: 0.4,
-    artifactsDir: state.rawDir,
+export async function stepInterpretAnalyst(state: PipelineState): Promise<void> {
+  const scoreBreakdown = ScoreBreakdownSchema.parse(state.scoreBreakdown);
+  const deterministicReport = ReportSchema.parse({
+    ticker: state.ticker,
+    company_name: state.identity?.company_name ?? "",
+    isin: state.identity?.isin ?? "",
+    exchange: state.identity?.exchange ?? "",
+    sector: state.identity?.sector ?? "",
+    industry: state.identity?.industry ?? "",
+    research_date: state.runDate,
+    category: state.category,
+    growth_research_score: state.scoreTotal,
+    gate: state.gate,
+    confidence: state.confidence,
+    key_metrics: state.keyMetrics,
+    score_breakdown: scoreBreakdown,
+    moat_assessment: {
+      rating: "Unknown",
+      sources: [],
+      evidence: [],
+      threats: [],
+    },
+    valuation_regime: state.lensResults?.quality_compounder?.valuationRegime ?? null,
+    fair_value_corridor: state.lensResults?.quality_compounder?.fairValueCorridor ?? null,
+    current_vs_fair_value_pct: state.lensResults?.quality_compounder?.currentVsFairValuePct ?? null,
+    timing_score: state.timing?.timingScore ?? null,
+    regime: state.regimeResult?.regime ?? null,
+    quadrant: state.timing?.quadrant ?? null,
+    trade_setup: state.tradeSetup,
   });
+
+  const evidence = buildAnalystEvidence(deterministicReport, state.normalizedDataset ?? state.companyDataset ?? null, state.facts ?? []);
+  const beforeFingerprint = numericFingerprint(deterministicReport);
+  const analyst = await interpretReport(deterministicReport as Readonly<Report>, evidence, {
+    runId: state.runId,
+    artifactsDir: state.rawDir,
+    model: process.env.LLM_MODEL ?? state.modelSummary,
+    redTeamModel: process.env.LLM_MODEL ?? state.modelSummary,
+    enabled: process.env.ENABLE_ANALYST_LLM !== "0",
+  });
+  const afterFingerprint = numericFingerprint(deterministicReport);
+  if (beforeFingerprint !== afterFingerprint) {
+    throw new Error("Analyst step attempted to mutate deterministic numeric fields.");
+  }
+
+  state.analyst = analyst;
+  if (analyst) {
+    state.thesis = {
+      thesis_summary: [analyst.thesis, analyst.numbersSay].filter(Boolean).join(" "),
+      bull_case: [analyst.bullCase].filter(Boolean),
+      bear_case: [analyst.bearCase].filter(Boolean),
+      catalysts: analyst.catalysts.map((c) => `${c.text} [${c.status}]`),
+      open_questions: [analyst.entryTrigger].filter(Boolean),
+      falsification_tests: [analyst.exitWatchTrigger].filter(Boolean),
+    };
+    logRun(state.runId, "info", `[analyst] interpretation completed with model=${analyst.model.name}`);
+    return;
+  }
+
   state.thesis = {
-    thesis_summary: data.thesis_summary ?? "",
-    bull_case: data.bull_case ?? [],
-    bear_case: data.bear_case ?? [],
-    catalysts: data.catalysts ?? [],
-    open_questions: data.open_questions ?? [],
-    falsification_tests: data.falsification_tests ?? [],
+    thesis_summary: "Analyst interpretation unavailable. Deterministic result remains complete.",
+    bull_case: [],
+    bear_case: [],
+    catalysts: [],
+    open_questions: [],
+    falsification_tests: [],
   };
+  logRun(state.runId, "info", "[analyst] skipped or unavailable");
 }
 
-// -----------------------------------------------------------
-// Step 6b: Red-Team (LLM, conditional on score >= 75)
-// -----------------------------------------------------------
-const REDTEAM_SCORE_THRESHOLD = 75;
-
-export async function stepRedTeam(state: PipelineState): Promise<void> {
-  // Only run when score is high enough to warrant adversarial review
-  if ((state.scoreTotal ?? 0) < REDTEAM_SCORE_THRESHOLD) {
-    logRun(state.runId, "info", `[redteam] skipped (score=${state.scoreTotal} < ${REDTEAM_SCORE_THRESHOLD})`);
-    state.redTeam = null;
-    return;
-  }
-
-  const bullCase = state.thesis?.bull_case ?? [];
-  if (bullCase.length === 0) {
-    logRun(state.runId, "info", "[redteam] skipped (no bull case)");
-    state.redTeam = null;
-    return;
-  }
-
-  // Build a compact metrics summary for the prompt
-  const km = state.keyMetrics;
-  const keyMetricsSummary = km
-    ? [
-        km.revenue_growth_yoy != null ? `Umsatzwachstum YoY: ${(km.revenue_growth_yoy * 100).toFixed(1)}%` : null,
-        km.gross_margin != null ? `Bruttomarge: ${(km.gross_margin * 100).toFixed(1)}%` : null,
-        km.fcf_margin != null ? `FCF-Marge: ${(km.fcf_margin * 100).toFixed(1)}%` : null,
-        km.rule_of_40 != null ? `Rule of 40: ${km.rule_of_40.toFixed(0)}` : null,
-        km.net_debt_to_ebitda != null ? `Net Debt/EBITDA: ${km.net_debt_to_ebitda.toFixed(1)}x` : null,
-        km.ev_sales != null ? `EV/Sales: ${km.ev_sales.toFixed(1)}x` : null,
-        km.piotroski_f != null ? `Piotroski-F: ${km.piotroski_f}/9` : null,
-        km.altman_z != null ? `Altman-Z: ${km.altman_z.toFixed(2)}` : null,
-      ].filter(Boolean).join(", ")
-    : "";
-
-  try {
-    const { data } = await chatJSON<RedTeam>({
-      runId: state.runId,
-      step: "redteam",
-      model: state.modelSummary,
-      system: REDTEAM_SYSTEM,
-      user: REDTEAM_USER(
-        state.ticker,
-        state.category ?? "Transitional",
-        state.scoreTotal ?? 0,
-        bullCase,
-        keyMetricsSummary,
-        state.context ?? "",
-      ),
-      temperature: 0.3,
-      artifactsDir: state.rawDir,
-    });
-    state.redTeam = RedTeamSchema.parse(data);
-    logRun(state.runId, "info", `[redteam] ${state.redTeam.bear_arguments.length} bear arguments`);
-  } catch (err) {
-    logRun(state.runId, "warn", `[redteam] failed: ${String(err)}`);
-    state.redTeam = null;
-  }
-}
+// Backward-compatible no-op exports
+export async function stepSummarize(_state: PipelineState): Promise<void> {}
+export async function stepRedTeam(_state: PipelineState): Promise<void> {}
 
 // -----------------------------------------------------------
 // Step 7a: computeFairValue (deterministic)
@@ -547,7 +849,88 @@ function latestNumFact(facts: ProviderFact[], field: string): number | null {
   return null;
 }
 
-/** Compute current net debt from facts: totalDebt - cash */
+function numericFingerprint(input: unknown): string {
+  const entries: string[] = [];
+  const visit = (value: unknown, pathParts: string[]) => {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      entries.push(`${pathParts.join(".")}:${Object.is(value, -0) ? "-0" : value}`);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item, idx) => visit(item, [...pathParts, String(idx)]));
+      return;
+    }
+    if (value && typeof value === "object") {
+      for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+        visit((value as Record<string, unknown>)[key], [...pathParts, key]);
+      }
+    }
+  };
+  visit(input, []);
+  return crypto.createHash("sha256").update(entries.join("|"), "utf8").digest("hex");
+}
+
+function asRecordArray(value: unknown): Record<string, unknown>[] {
+  if (Array.isArray(value)) {
+    return value.filter((v): v is Record<string, unknown> => typeof v === "object" && v !== null);
+  }
+  if (typeof value !== "object" || value === null) return [];
+  const rec = value as Record<string, unknown>;
+  for (const key of ["annualReports", "quarterlyReports", "historical", "data"]) {
+    const arr = rec[key];
+    if (Array.isArray(arr)) {
+      return arr.filter((v): v is Record<string, unknown> => typeof v === "object" && v !== null);
+    }
+  }
+  return [];
+}
+
+function toNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const n = Number(value.replace(/,/g, ""));
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function readNumberCaseInsensitive(record: Record<string, unknown>, keys: string[]): number | null {
+  const map = new Map(Object.keys(record).map((k) => [k.toLowerCase(), k]));
+  for (const key of keys) {
+    const actual = map.get(key.toLowerCase());
+    if (!actual) continue;
+    const n = toNumber(record[actual]);
+    if (n !== null) return n;
+  }
+  return null;
+}
+
+function extractHistoricalMultipleSeries(
+  facts: ProviderFact[],
+  fieldNeedles: string[],
+  valueKeys: string[],
+): number[] {
+  const out: number[] = [];
+  for (const fact of facts) {
+    const field = fact.field.toLowerCase();
+    if (!fieldNeedles.some((needle) => field.includes(needle))) continue;
+
+    const rows = asRecordArray(fact.value);
+    if (rows.length === 0 && typeof fact.value === "object" && fact.value !== null) {
+      const direct = readNumberCaseInsensitive(fact.value as Record<string, unknown>, valueKeys);
+      if (direct !== null && direct > 0) out.push(direct);
+      continue;
+    }
+
+    for (const row of rows) {
+      const value = readNumberCaseInsensitive(row, valueKeys);
+      if (value !== null && value > 0) out.push(value);
+    }
+  }
+  return out.slice(0, 12);
+}
+
+/** Legacy fallback only; prefer debt_breakdown.net_debt_interest_bearing. */
 function computeNetDebtFromFacts(facts: ProviderFact[]): number | null {
   const totalDebt = latestNumFact(facts, "total_debt") ?? latestNumFact(facts, "long_term_debt");
   const cash = latestNumFact(facts, "cash_and_equivalents") ?? latestNumFact(facts, "cash");
@@ -574,10 +957,14 @@ export async function stepComputeFairValue(state: PipelineState): Promise<void> 
   const currencyFact = facts.find((f) => f.field === "currency")?.value;
   const currency = typeof currencyFact === "string" ? currencyFact : "USD";
 
-  const netDebt = computeNetDebtFromFacts(facts);
+  const netDebt = state.debtBreakdown?.net_debt_interest_bearing ?? null;
   const shares =
     latestNumFact(facts, "shares_outstanding") ??
     latestNumFact(facts, "sharesOutstanding") ??
+    null;
+  const revenueTtm =
+    latestNumFact(facts, "revenue_ttm") ??
+    latestNumFact(facts, "totalRevenueTTM") ??
     null;
 
   // Peer medians from bucket
@@ -601,14 +988,9 @@ export async function stepComputeFairValue(state: PipelineState): Promise<void> 
   const rdcfInput: FairValueReverseDcfCheck | null = state.reverseDcf
     ? {
         implied_fcf_cagr: state.reverseDcf.impliedGrowthRate ?? null,
-        terminal_growth: 0.03,
-        horizon_years: state.reverseDcf.inputs?.years ?? 10,
-        classification:
-          state.reverseDcf.classification === "cheap" ? "conservative" :
-          state.reverseDcf.classification === "fair"  ? "fair" :
-          state.reverseDcf.classification === "ambitious" ? "ambitious" :
-          state.reverseDcf.classification === "speculative" ? "extreme" :
-          null,
+        terminal_growth: DCF_ASSUMPTIONS.terminalGrowth,
+        horizon_years: state.reverseDcf.inputs?.years ?? DCF_ASSUMPTIONS.horizonYears,
+        classification: state.reverseDcf.classification === "unknown" ? null : state.reverseDcf.classification,
       }
     : null;
 
@@ -623,6 +1005,24 @@ export async function stepComputeFairValue(state: PipelineState): Promise<void> 
     reverseDcf: rdcfInput,
     netDebt,
     sharesOutstanding: shares,
+    revenueTtm,
+    ownHistoricalMultiples: {
+      ev_sales: extractHistoricalMultipleSeries(
+        facts,
+        ["key_metrics", "key-metrics", "ratios", "valuation"],
+        ["evToSales", "evToSalesTTM", "enterpriseValueRevenueMultiple", "ev_sales"],
+      ),
+      ev_gross_profit: extractHistoricalMultipleSeries(
+        facts,
+        ["key_metrics", "key-metrics", "ratios", "valuation"],
+        ["evToGrossProfit", "evToGrossProfitTTM", "ev_gross_profit"],
+      ),
+      forward_pe: extractHistoricalMultipleSeries(
+        facts,
+        ["ratios", "key_metrics", "key-metrics", "valuation"],
+        ["priceEarningsRatio", "peRatio", "forwardPE", "forward_pe"],
+      ),
+    },
   });
 
   state.fairValue = result;
@@ -656,7 +1056,7 @@ export async function stepGenerateVerdict(state: PipelineState): Promise<void> {
   let detail = `${verdictDet.label}. Siehe Block-Detail.`;
 
   try {
-    const { data } = await chatJSON<{ detail: string }>({
+    const result = await chatJSON<{ detail: string }>({
       runId: state.runId,
       step: "verdict_detail",
       model: state.modelSummary,
@@ -672,6 +1072,20 @@ export async function stepGenerateVerdict(state: PipelineState): Promise<void> {
       temperature: 0.3,
       artifactsDir: state.rawDir,
     });
+    const { data } = result;
+    state.effectiveModels = state.effectiveModels ?? { scoring: {} };
+    state.llmCalls = state.llmCalls ?? [];
+    state.effectiveModels.verdictDetail = result.effectiveModel;
+    state.llmCalls.push({
+      step: "verdict_detail",
+      provider: result.provider,
+      requestedModel: result.model,
+      model: result.effectiveModel,
+      tokensIn: result.usage?.promptTokens,
+      tokensOut: result.usage?.completionTokens,
+      rateLimit: result.rateLimit,
+      systemFingerprint: result.systemFingerprint,
+    });
     detail = sanitizeVerdictDetail(data.detail, verdictDet.label);
   } catch {
     logRun(state.runId, "warn", "[verdict] LLM detail failed, using deterministic fallback");
@@ -679,6 +1093,36 @@ export async function stepGenerateVerdict(state: PipelineState): Promise<void> {
 
   state.verdict = { ...verdictDet, detail };
   logRun(state.runId, "info", `[verdict] label="${verdictDet.label}" code=${verdictDet.reasonCode}`);
+}
+
+// -----------------------------------------------------------
+// Step 7d: computeTradeSetup (deterministic)
+// -----------------------------------------------------------
+export async function stepComputeTradeSetup(state: PipelineState): Promise<void> {
+  state.tradeSetup = computeTradeSetup({
+    gate: state.gate ?? "Yellow",
+    lens: state.lensResults?.quality_compounder?.lens ?? "quality_compounder",
+    regime: state.regimeResult?.regime ?? state.marketContext?.regime ?? null,
+    fairValue: state.fairValue
+      ? {
+          current_price: state.fairValue.current_price,
+          range_low: state.fairValue.range_low,
+          point_estimate: state.fairValue.point_estimate,
+        }
+      : null,
+    technicals: state.technicals
+      ? {
+          sma200: state.technicals.sma200,
+          atr: state.technicals.atr,
+        }
+      : null,
+  });
+
+  logRun(
+    state.runId,
+    "info",
+    `[trade_setup] computable=${state.tradeSetup.computable} action=${state.tradeSetup.action} rr=${state.tradeSetup.risk_reward ?? "n/a"}`,
+  );
 }
 
 // -----------------------------------------------------------
@@ -722,6 +1166,17 @@ function ulid(): string {
   // einfacher ULID-ähnlicher String, ausreichend für lokales SQLite-PK
   return Date.now().toString(36) + crypto.randomBytes(8).toString("hex");
 }
+function resolveCodeVersion(): string {
+  if (process.env.BUILD_GIT_SHA) return process.env.BUILD_GIT_SHA;
+  if (process.env.GIT_SHA) return process.env.GIT_SHA;
+  try {
+    const out = execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
+    if (out) return out;
+  } catch {
+    // best-effort only
+  }
+  return "dev";
+}
 
 export async function stepPersist(state: PipelineState): Promise<{ reportId: string; reportMdPath: string; reportJsonPath: string }> {
   const reportId = ulid();
@@ -730,7 +1185,7 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
   // Source list für Report
   const sourceList = Array.from(state.sourceMap?.entries() ?? []).map(([idx, s]) => ({
     idx,
-    url: s.url,
+    url: sanitizeUrlForAudit(s.url),
     title: s.title,
     class: (["A", "A-", "B", "B-", "C", "D", "E"].includes(s.klass) ? s.klass : "C") as
       | "A"
@@ -743,6 +1198,13 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
   }));
 
   const breakdown = ScoreBreakdownSchema.parse(state.scoreBreakdown);
+  const codeVersion = resolveCodeVersion();
+  const providerVersions = Object.fromEntries(
+    Array.from(new Set((state.providerResults ?? []).map((r) => r.provider))).map((name) => [name, "unknown"]),
+  );
+  const runIntegrityBanner = state.runIncompleteDueToTechnicalFailure
+    ? "Lauf unvollständig — technischer Abruf-Fehler, bitte erneut ausführen."
+    : "";
 
   const blockAudits = SECTION_BLOCKS.map((b) => {
     const r = state.blockResults?.[b.id];
@@ -752,7 +1214,17 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
         name: i.name,
         score: typeof i.score === "number" ? i.score : null,
         rationale: i.rationale ?? "",
+        reason: i.reason ?? i.rationale ?? "",
+        inputs: i.inputs ?? [],
         sourceIdx: i.sourceIdx != null ? [i.sourceIdx] : [],
+        scoreType: i.scoreType ?? "llm_judgment",
+        scoreValid: i.scoreValid ?? (typeof i.score === "number"),
+        rationaleValid: i.rationaleValid ?? true,
+        sourceSupportStatus: i.sourceSupportStatus ?? "not_checked",
+        metricRefs: i.metricRefs ?? [],
+        missingMetricRefs: i.missingMetricRefs ?? [],
+        dataStatus: i.dataStatus ?? "valid",
+        invalidSourceRefs: i.invalidSourceRefs ?? [],
       })),
       confidence: r?.confidence ?? "medium",
       hard_blockers: r?.hard_blockers ?? [],
@@ -772,6 +1244,17 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
     growth_research_score: state.scoreTotal,
     gate: state.gate,
     confidence: state.confidence,
+    lens: state.lensResults?.quality_compounder?.lens ?? "quality_compounder",
+    rubric_class: state.lensResults?.quality_compounder?.rubricClass ?? "industrial_software",
+    not_scorable_with_standard_rubric:
+      state.lensResults?.quality_compounder?.notScorableWithStandardRubric ?? false,
+    not_scorable_reason: state.lensResults?.quality_compounder?.notScorableReason ?? null,
+    reporting_currency: state.normalization?.reportingCurrency ?? THRESHOLDS.reporting_currency_default,
+    gaap_vs_adjusted: state.normalization?.gaapVsAdjusted ?? {
+      gaap: {},
+      adjusted: {},
+      sbcAdjustmentRatio: 1,
+    },
     thesis_summary: state.thesis?.thesis_summary ?? "",
     bull_case: state.thesis?.bull_case ?? [],
     bear_case: state.thesis?.bear_case ?? [],
@@ -782,16 +1265,110 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
     catalysts: state.thesis?.catalysts ?? [],
     red_flags: state.redFlags ?? [],
     hard_blockers: state.hardBlockers ?? [],
+    red_flags_clustered: state.redFlagsClustered ?? [],
     open_questions: state.thesis?.open_questions ?? [],
     falsification_tests: state.thesis?.falsification_tests ?? [],
     source_list: sourceList,
     handoff_to_trade_engine: canHandoffToTradeEngine({
-      scoreTotal: state.scoreTotal!,
+      scoreTotal: state.scoreTotal ?? 0,
       coverage: state.coverage!,
       confidence: state.confidence!,
       category: state.category!,
       hardBlockers: state.hardBlockers!,
     }),
+    models: {
+      extract: state.effectiveModels?.extract ?? null,
+      scoring: state.effectiveModels?.scoring ?? {},
+      summary: state.effectiveModels?.summary ?? null,
+      red_team: state.effectiveModels?.redTeam ?? null,
+      verdict_detail: state.effectiveModels?.verdictDetail ?? null,
+    },
+    audit_events: state.auditEvents ?? [],
+    audit_llm_calls: state.llmCalls ?? [],
+    invalid_source_refs: Array.from(new Set(state.invalidSourceRefs ?? [])),
+    business_model_profile: state.businessModelProfile ?? null,
+    metric_applicability: state.metricApplicability ?? {},
+    data_quality: {
+      coverage: state.dataQuality ?? {
+        keyMetricCoverage: 0,
+        criticalMetricCoverage: 0,
+        indicatorScoreCoverage: 0,
+        sourceSupportCoverage: 0,
+        providerCrossCheckCoverage: 0,
+        applicabilityAdjustedCoverage: 0,
+        missingCriticalMetrics: [],
+        notApplicableMetrics: [],
+        unsupportedClaims: [],
+        conflictingMetrics: [],
+      },
+      confidence_cap_reason:
+        (state.dataQuality?.criticalMetricCoverage ?? 1) < 0.55
+          ? "Critical coverage below threshold"
+          : "",
+      provider_coverage_matrix: [],
+      issues: state.debtBreakdown?.issues ?? [],
+    },
+    debt_breakdown: state.debtBreakdown ?? null,
+    source_counts: {
+      external: sourceList.filter((s) => !/^derived:/i.test(s.url)).length,
+      internal_derived: sourceList.filter((s) => /^derived:/i.test(s.url)).length,
+      sec_filings: sourceList.filter((s) => /sec\.gov|edgar/i.test(s.url)).length,
+      market_data: sourceList.filter((s) => /yahoo|alphavantage|financialmodelingprep|fmp/i.test(s.url)).length,
+      news: sourceList.filter((s) => /news|rss|businesswire/i.test(s.url)).length,
+    },
+    trader_cockpit: {
+      actionability:
+        (state.dataQuality?.criticalMetricCoverage ?? 1) < 0.4
+          ? "data_insufficient"
+          : state.gate === "Green"
+            ? "watchlist"
+            : "research_only",
+      primary_blocker: (state.hardBlockers ?? [])[0] ?? null,
+      blocker_type:
+        (state.dataQuality?.criticalMetricCoverage ?? 1) < 0.55
+          ? "data_quality"
+          : (state.hardBlockers?.length ?? 0) > 0
+            ? "hard"
+            : null,
+      data_quality_label:
+        (state.dataQuality?.criticalMetricCoverage ?? 0) >= 0.75
+          ? "strong"
+          : (state.dataQuality?.criticalMetricCoverage ?? 0) >= 0.55
+            ? "medium"
+            : "weak",
+      critical_missing_data: state.dataQuality?.missingCriticalMetrics ?? [],
+      top_bull_points: (state.thesis?.bull_case ?? []).slice(0, 3),
+      top_bear_points: (state.thesis?.bear_case ?? []).slice(0, 3),
+      next_recheck_trigger: null,
+    },
+    score_heatmap: (Object.entries(state.scoreBreakdown ?? {}) as Array<[BlockKey, number]>).map(([block, score]) => ({
+      block,
+      score,
+      maxScore: BLOCK_WEIGHTS[block],
+      normalizedScore: BLOCK_WEIGHTS[block] > 0 ? Math.round((score / BLOCK_WEIGHTS[block]) * 100) : 0,
+      confidence: state.confidence ?? "low",
+      coverage: state.coverage ?? 0,
+      trend: "unknown",
+      peerPercentile: null,
+      dataStatus: (state.dataQuality?.criticalMetricCoverage ?? 0) < 0.55 ? "weak" : "valid",
+    })),
+    source_confidence_matrix: (state.blockResults
+      ? Object.values(state.blockResults)
+          .flatMap((b) => b.indicators)
+          .map((i) => ({
+            claim: `${i.name}: ${i.rationale}`,
+            claimType: i.scoreType === "deterministic" ? "metric" : "rationale",
+            sourceClass: null,
+            sourceIdx: i.sourceIdx != null ? [i.sourceIdx] : [],
+            confidence: i.rationaleValid === false ? "low" : "medium",
+            supportStatus: i.sourceSupportStatus ?? "not_checked",
+          }))
+      : []),
+    chart_data: {
+      financials_quarterly: [],
+      dilution: [],
+      valuation: [],
+    },
     // Phase A: forensics & business model
     business_model_type: state.businessModelType ?? "",
     piotroski_components: state.forensicsResult?.piotroski?.components ?? {},
@@ -799,8 +1376,8 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
     altman_classification: state.forensicsResult?.altman?.classification ?? null,
     beneish_manipulation_probability: state.forensicsResult?.beneish?.manipulationProbability ?? null,
 
-    // Phase C: Red-Team
-    red_team: state.redTeam ?? null,
+    // Phase C (legacy): Red-Team
+    red_team: null,
 
     // Phase E: Reverse-DCF
     reverse_dcf: state.reverseDcf
@@ -809,6 +1386,32 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
           classification: state.reverseDcf.classification ?? "unknown",
         }
       : null,
+
+    // Phase 2 deterministic scoring outputs
+    valuation_regime: state.lensResults?.quality_compounder?.valuationRegime ?? null,
+    fair_value_corridor: state.lensResults?.quality_compounder?.fairValueCorridor ?? null,
+    current_vs_fair_value_pct: state.lensResults?.quality_compounder?.currentVsFairValuePct ?? null,
+    expectations_gap: state.lensResults?.quality_compounder?.expectationsGap ?? null,
+    inflection_flags: state.lensResults?.quality_compounder?.inflectionFlags ?? null,
+    ownership_score: state.lensResults?.quality_compounder?.ownershipScore ?? null,
+    aaqs_binary: state.lensResults?.quality_compounder?.aaqsBinary ?? null,
+    stability_scores: state.lensResults?.quality_compounder?.stabilityScores ?? null,
+    lens_results: state.lensResults
+      ? [state.lensResults.quality_compounder, state.lensResults.emerging_winner]
+      : [],
+    technicals: state.technicals ?? null,
+    regime: state.regimeResult?.regime ?? null,
+    breadth_is_proxy: state.regimeResult?.breadthIsProxy ?? false,
+    timing_score: state.timing?.timingScore ?? null,
+    quadrant: state.timing?.quadrant
+      ? {
+          ...state.timing.quadrant,
+          yFundamentalScore: state.scoreTotal,
+        }
+      : null,
+    action_recommendation: state.timing?.actionRecommendation ?? null,
+    analyst: state.analyst ?? null,
+    trade_setup: state.tradeSetup,
 
     // Phase F: Fair Value
     fair_value: state.fairValue ?? null,
@@ -823,6 +1426,60 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
         }
       : null,
   });
+
+  const scoreHistory = persistScoreHistoryEntry({
+    reportId,
+    ticker: state.ticker.toUpperCase(),
+    researchDate: state.runDate,
+    scoreTotal: Math.round(state.scoreTotal ?? reportData.growth_research_score ?? 0),
+    gate: reportData.gate,
+    confidence: reportData.confidence,
+  });
+
+  reportData.market_context = state.marketContext
+    ? {
+        as_of: state.marketContext.asOf,
+        regime: state.regimeResult?.regime ?? state.marketContext.regime ?? null,
+        breadth_pct_above_ma200: state.marketContext.breadthPctAboveMa200,
+        index_vs_ma200_pct: state.marketContext.indexVsMa200Pct,
+        vix: state.marketContext.vix,
+        vix_percentile_1y: state.marketContext.vixPercentile1y,
+        high_yield_spread: state.marketContext.highYieldSpread,
+        yield_curve_10y2y: state.marketContext.yieldCurve10y2y,
+      }
+    : null;
+  reportData.sector_baseline_used = state.lensResults?.quality_compounder?.sectorBaselineUsed ?? null;
+  reportData.combo_flags = state.lensResults?.quality_compounder?.comboFlags ?? [];
+  reportData.confidence_score = deriveConfidenceScore({
+    coverage: state.coverage ?? 0,
+    confidence: reportData.confidence,
+    hardBlockers: reportData.hard_blockers,
+    sectorBaseline: reportData.sector_baseline_used ?? { signals: [] },
+    comboSignals: reportData.combo_flags,
+    scoreTrend: scoreHistory.trend,
+  });
+  reportData.score_trend = scoreHistory.trend;
+  reportData.assumptions = [...MODEL_ASSUMPTIONS];
+  reportData.score_interpretation = {
+    mode: "as_was",
+    label: "As-Was",
+    thresholdSetVersion: THRESHOLDS.version,
+    assumptionsVersion: ASSUMPTIONS_VERSION,
+  };
+  reportData.audit_snapshot = {
+    codeVersion,
+    thresholdSetVersion: THRESHOLDS.version,
+    assumptionsVersion: ASSUMPTIONS_VERSION,
+    dataSnapshotId: state.runId,
+    providerVersions,
+    runAt: new Date().toISOString(),
+  };
+  reportData.run_integrity = {
+    incomplete_due_to_technical_fetch_errors: state.runIncompleteDueToTechnicalFailure ?? false,
+    retry_recommended: state.retryRecommended ?? false,
+    banner: runIntegrityBanner,
+    fetch_statuses: state.fetchDiagnostics ?? [],
+  };
 
   const reportsDir = path.join(DATA_DIR, "reports", state.ticker.toUpperCase());
   fs.mkdirSync(reportsDir, { recursive: true });
@@ -844,16 +1501,19 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
       runId: state.runId,
       category: reportData.category,
       gate: reportData.gate,
-      scoreTotal: Math.round(reportData.growth_research_score),
+      scoreTotal:
+        typeof reportData.growth_research_score === "number"
+          ? Math.round(reportData.growth_research_score)
+          : null,
       scoreBreakdown: JSON.stringify(reportData.score_breakdown),
       confidence: reportData.confidence,
       reportMdPath,
       reportJsonPath,
       rawDir: state.rawDir,
       createdAt: Date.now(),
-      modelExtract: state.modelExtract,
-      modelScoring: state.modelScoring,
-      modelSummary: state.modelSummary,
+      modelExtract: reportData.models.extract ?? state.modelExtract,
+      modelScoring: Object.values(reportData.models.scoring)[0] ?? state.modelScoring,
+      modelSummary: reportData.models.summary ?? state.modelSummary,
       hardBlockers: JSON.stringify(reportData.hard_blockers),
       handoffToTradeEngine: reportData.handoff_to_trade_engine ? 1 : 0,
     })
@@ -882,9 +1542,17 @@ function renderMarkdown(r: Report): string {
   const lines: string[] = [];
   lines.push(`# ${r.ticker} · ${r.company_name}`);
   lines.push("");
-  lines.push(`**Datum:** ${r.research_date}  ·  **Gate:** ${r.gate}  ·  **Score:** ${r.growth_research_score}/100  ·  **Kategorie:** ${r.category}  ·  **Confidence:** ${r.confidence}`);
+  lines.push(`**Datum:** ${r.research_date}  ·  **Gate:** ${r.gate}  ·  **Score:** ${r.growth_research_score ?? "n/a"}${r.growth_research_score != null ? "/100" : ""}  ·  **Kategorie:** ${r.category}  ·  **Confidence:** ${r.confidence}`);
   if (r.isin) {
     lines.push(`**ISIN:** ${r.isin}`);
+  }
+  lines.push("");
+  lines.push("## Modelle");
+  lines.push(`- Extract: ${r.models.extract ?? "n/a"}`);
+  lines.push(`- Summary: ${r.models.summary ?? "n/a"}`);
+  lines.push(`- Verdict Detail: ${r.models.verdict_detail ?? "n/a"}`);
+  for (const [block, model] of Object.entries(r.models.scoring ?? {})) {
+    lines.push(`- Section ${block}: ${model}`);
   }
   lines.push("");
   lines.push("## These");
@@ -913,6 +1581,21 @@ function renderMarkdown(r: Report): string {
     r.moat_assessment.threats.forEach((t) => lines.push(`- Threat: ${t}`));
   }
   lines.push("");
+  if (r.assumptions.length > 0) {
+    lines.push("## Annahmen");
+    r.assumptions.forEach((a) => {
+      const unit = a.unit === "years" ? " Jahre" : "";
+      lines.push(`- [${a.kind}] ${a.label}: ${a.value}${unit} — ${a.rationale}`);
+    });
+    lines.push("");
+  }
+
+  if (r.analyst) {
+    lines.push("## KI-Interpretation (nicht im Score)");
+    lines.push("Interpretation, kein Urteil und keine Zahl. Eigenstaendig gegen Primaerquellen pruefen.");
+    lines.push("");
+  }
+
   lines.push("## Score-Breakdown");
   for (const [k, v] of Object.entries(r.score_breakdown)) {
     lines.push(`- **${k}**: ${v}`);
@@ -926,14 +1609,18 @@ function renderMarkdown(r: Report): string {
 }
 
 export async function resolveModels(): Promise<{ extract: string; scoring: string; summary: string }> {
+  const envModel = process.env.LLM_MODEL?.trim();
+  if (envModel) {
+    return { extract: envModel, scoring: envModel, summary: envModel };
+  }
   const { getLLMConfig } = await import("@/lib/llm/config");
   const cfg = getLLMConfig();
   if (cfg.provider === "deepseek") {
     const m = cfg.deepseekModel || "deepseek-chat";
     return { extract: m, scoring: m, summary: m };
   }
-  if (cfg.provider === "openrouter") {
-    const m = cfg.openrouterModel || "openrouter/free";
+  if (cfg.provider === "groq") {
+    const m = cfg.groqModel || "meta-llama/llama-4-scout-17b-16e-instruct";
     return { extract: m, scoring: m, summary: m };
   }
   const m = await pickDefaultModel();

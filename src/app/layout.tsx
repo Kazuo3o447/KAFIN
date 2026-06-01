@@ -5,7 +5,7 @@ import { ToastHost } from "@/components/Toast";
 
 export const metadata: Metadata = {
   title: "Kafin Research",
-  description: "Lokale fundamentale Aktien-Research-Plattform mit Ollama",
+  description: "Lokale fundamentale Aktien-Research-Plattform mit LM Studio",
 };
 
 const NAV = [

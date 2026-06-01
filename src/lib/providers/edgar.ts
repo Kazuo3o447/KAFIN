@@ -7,6 +7,7 @@
  */
 import { throttledFetch } from "./throttle";
 import type { DataProvider, ProviderContext, ProviderResult, ProviderFact } from "./types";
+import type { Capability, DataProviderV2, ProviderFetchResultV2 } from "./types";
 
 const UA = process.env.EDGAR_USER_AGENT || "Kafin Research (kafin@local)";
 const TICKER_INDEX_URL = "https://www.sec.gov/files/company_tickers.json";
@@ -407,3 +408,196 @@ export async function fetchForm4Summary(
     return null;
   }
 }
+
+function normalizeFp(fp: string | undefined): number | null {
+  if (!fp) return null;
+  const m = fp.match(/Q([1-4])/i);
+  return m ? Number(m[1]) : null;
+}
+
+function tagValues(
+  cf: CompanyFacts,
+  tagCandidates: string[],
+  forms: string[],
+): Array<{ periodEnd: string; fiscalYear: number | null; fiscalQuarter: number | null; value: number }> {
+  const us = cf.facts?.["us-gaap"] ?? {};
+  const out: Array<{ periodEnd: string; fiscalYear: number | null; fiscalQuarter: number | null; value: number }> = [];
+  for (const tag of tagCandidates) {
+    const node = us[tag];
+    if (!node?.units) continue;
+    const unitKey = node.units["USD"]
+      ? "USD"
+      : node.units["shares"]
+        ? "shares"
+        : Object.keys(node.units)[0];
+    if (!unitKey) continue;
+    for (const p of node.units[unitKey] ?? []) {
+      if (!forms.includes(p.form ?? "")) continue;
+      if (typeof p.end !== "string" || typeof p.val !== "number") continue;
+      out.push({
+        periodEnd: p.end,
+        fiscalYear: typeof p.fy === "number" ? p.fy : null,
+        fiscalQuarter: normalizeFp(p.fp),
+        value: p.val,
+      });
+    }
+    if (out.length > 0) break;
+  }
+  return out;
+}
+
+function buildEdgarRows(cf: CompanyFacts, isQuarterly: boolean): Array<Record<string, unknown>> {
+  const forms = isQuarterly ? ["10-Q", "6-K"] : ["10-K", "20-F", "40-F"];
+  const metrics: Array<[string, string[]]> = [
+    ["revenue", ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax"]],
+    ["grossProfit", ["GrossProfit"]],
+    ["ebit", ["OperatingIncomeLoss"]],
+    ["ebitda", ["OperatingIncomeLoss"]],
+    ["netIncome", ["NetIncomeLoss"]],
+    ["operatingCashflow", ["NetCashProvidedByUsedInOperatingActivities"]],
+    ["capex", ["PaymentsToAcquirePropertyPlantAndEquipment", "CapitalExpenditure"]],
+    ["sharesDiluted", ["WeightedAverageNumberOfDilutedSharesOutstanding", "CommonStockSharesOutstanding"]],
+    ["dividendPerShare", ["CommonStockDividendsPerShareDeclared"]],
+    ["totalDebt", ["LongTermDebtNoncurrent", "LongTermDebtAndCapitalLeaseObligations"]],
+    ["cashAndEquivalents", ["CashAndCashEquivalentsAtCarryingValue"]],
+    ["totalEquity", ["StockholdersEquity"]],
+    ["totalAssets", ["Assets"]],
+    ["interestExpense", ["InterestExpense"]],
+    ["researchAndDevelopment", ["ResearchAndDevelopmentExpense"]],
+    ["stockBasedComp", ["ShareBasedCompensation"]],
+    ["inventory", ["InventoryNet"]],
+    ["accountsReceivable", ["AccountsReceivableNetCurrent"]],
+    ["shareRepurchases", ["PaymentsForRepurchaseOfCommonStock"]],
+  ];
+
+  const byPeriod = new Map<string, Record<string, unknown>>();
+  for (const [field, tags] of metrics) {
+    const vals = tagValues(cf, tags, forms);
+    for (const v of vals) {
+      const key = `${v.periodEnd}:${v.fiscalYear ?? ""}:${v.fiscalQuarter ?? ""}`;
+      const prev = byPeriod.get(key) ?? {
+        periodEnd: v.periodEnd,
+        fiscalYear: v.fiscalYear,
+        fiscalQuarter: v.fiscalQuarter,
+      };
+      byPeriod.set(key, { ...prev, [field]: v.value });
+    }
+  }
+
+  for (const row of byPeriod.values()) {
+    const ocf = typeof row.operatingCashflow === "number" ? row.operatingCashflow : null;
+    const capex = typeof row.capex === "number" ? row.capex : null;
+    row.freeCashflow = ocf !== null && capex !== null ? ocf - Math.abs(capex) : null;
+  }
+
+  return Array.from(byPeriod.values()).sort((a, b) =>
+    String(a.periodEnd).localeCompare(String(b.periodEnd)),
+  );
+}
+
+async function fetchCompanyFactsByTicker(ticker: string): Promise<{ cik: string; facts: CompanyFacts } | null> {
+  const idx = await loadTickerIndex();
+  const entry = idx.get(ticker.toUpperCase());
+  if (!entry) return null;
+  const cik = entry.cik;
+  const cfRes = await throttledFetch(
+    `https://data.sec.gov/api/xbrl/companyfacts/CIK${cik}.json`,
+    { headers: { "User-Agent": UA, Accept: "application/json" } },
+    { ratePerSec: 8 },
+  );
+  if (!cfRes.ok) return null;
+  const facts = (await cfRes.json()) as CompanyFacts;
+  return { cik, facts };
+}
+
+export const edgarProviderV2: DataProviderV2 = {
+  name: "edgar",
+  capabilities: ["fundamentals_annual", "fundamentals_quarterly", "segments"],
+  available: () => true,
+  priorityByCapability: {
+    fundamentals_annual: 1,
+    fundamentals_quarterly: 1,
+    segments: 1,
+  },
+  async fetch(cap: Capability, ctx: ProviderContext): Promise<ProviderFetchResultV2> {
+    const start = Date.now();
+    try {
+      if (cap === "segments") {
+        // Segment and SaaS-specific metrics from EDGAR need filing-text parsing and are optional.
+        return {
+          provider: "edgar",
+          capability: cap,
+          ok: true,
+          data: { segments: [], saas: null },
+          provenance: [
+            {
+              source: "edgar",
+              url: `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${encodeURIComponent(ctx.ticker)}`,
+              klass: "A-",
+              asOf: ctx.runDate,
+              stale: false,
+            },
+          ],
+          raw: [{ name: "edgar_segments.json", contentType: "application/json", data: {} }],
+          durationMs: Date.now() - start,
+        };
+      }
+
+      if (cap !== "fundamentals_annual" && cap !== "fundamentals_quarterly") {
+        return {
+          provider: "edgar",
+          capability: cap,
+          ok: false,
+          data: null,
+          provenance: [],
+          raw: [],
+          error: "unsupported_capability",
+          durationMs: Date.now() - start,
+        };
+      }
+
+      const response = await fetchCompanyFactsByTicker(ctx.ticker);
+      if (!response) {
+        return {
+          provider: "edgar",
+          capability: cap,
+          ok: true,
+          data: [],
+          provenance: [],
+          raw: [],
+          durationMs: Date.now() - start,
+        };
+      }
+
+      const rows = buildEdgarRows(response.facts, cap === "fundamentals_quarterly");
+      return {
+        provider: "edgar",
+        capability: cap,
+        ok: true,
+        data: rows,
+        provenance: [
+          {
+            source: "edgar",
+            url: `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${response.cik}`,
+            klass: "A-",
+            asOf: rows.length > 0 ? String(rows[rows.length - 1]?.periodEnd ?? null) : null,
+            stale: false,
+          },
+        ],
+        raw: [{ name: `edgar_${cap}.json`, contentType: "application/json", data: response.facts }],
+        durationMs: Date.now() - start,
+      };
+    } catch (err) {
+      return {
+        provider: "edgar",
+        capability: cap,
+        ok: false,
+        data: null,
+        provenance: [],
+        raw: [],
+        error: err instanceof Error ? err.message : String(err),
+        durationMs: Date.now() - start,
+      };
+    }
+  },
+};

@@ -14,6 +14,8 @@ export interface AuditEvent {
   ts: number;
   runId: string;
   step: string;
+  provider?: string;
+  requestedModel?: string;
   model?: string;
   temperature?: number;
   promptHash?: string;
@@ -21,6 +23,16 @@ export interface AuditEvent {
   responsePath?: string;
   tokensIn?: number;
   tokensOut?: number;
+  rateLimit?: {
+    limitRequests?: string | null;
+    limitTokens?: string | null;
+    remainingRequests?: string | null;
+    remainingTokens?: string | null;
+    resetRequests?: string | null;
+    resetTokens?: string | null;
+    retryAfter?: string | null;
+  };
+  systemFingerprint?: string | null;
   ms?: number;
   ok: boolean;
   error?: string;

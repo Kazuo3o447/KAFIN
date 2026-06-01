@@ -7,6 +7,7 @@
  */
 import type { KeyMetrics } from "@/lib/schemas/report";
 import type { BusinessModelType } from "@/lib/research/business-model";
+import { FAIR_VALUE_ASSUMPTIONS } from "@/lib/research/assumptions";
 
 export type FairValueMethodKey = "ev_sales" | "ev_gross_profit" | "forward_pe";
 
@@ -24,7 +25,7 @@ export interface FairValueReverseDcfCheck {
   implied_fcf_cagr: number | null;
   terminal_growth: number;
   horizon_years: number;
-  classification: "conservative" | "fair" | "ambitious" | "extreme" | null;
+  classification: "conservative" | "reasonable" | "ambitious" | "speculative" | "extreme" | null;
 }
 
 export type FairValueClassification =
@@ -59,6 +60,12 @@ export interface FairValuePeerMedians {
   operating_margin: number | null;
 }
 
+export interface FairValueHistoricalMultiples {
+  ev_sales?: number[];
+  ev_gross_profit?: number[];
+  forward_pe?: number[];
+}
+
 export interface FairValueInput {
   ticker: string;
   currency: string;
@@ -72,13 +79,11 @@ export interface FairValueInput {
   sharesOutstanding: number | null;
   /** Explicit TTM revenue (preferred). If omitted, engine falls back to currentEV/ev_sales. */
   revenueTtm?: number | null;
+  /** Own historical valuation multiple series (5-10y preferred). */
+  ownHistoricalMultiples?: FairValueHistoricalMultiples;
 }
 
 // ─── Utility helpers ──────────────────────────────────────────────────────────
-
-function clamp(val: number, lo: number, hi: number): number {
-  return Math.min(Math.max(val, lo), hi);
-}
 
 function simpleQuantile(values: number[], p: number): number {
   if (values.length === 0) return 0;
@@ -113,6 +118,75 @@ function stddev(values: number[]): number {
   return Math.sqrt(variance);
 }
 
+interface MultipleSummary {
+  median: number;
+  p25: number;
+  p75: number;
+  cv: number | null;
+  count: number;
+  stable: boolean;
+  isProxy: boolean;
+}
+
+function normalizeMultipleSeries(values: number[] | undefined): number[] {
+  if (!values) return [];
+  return values.filter((v) => Number.isFinite(v) && v > 0).slice(0, 10);
+}
+
+function summarizeMultipleSeries(series: number[] | undefined, proxyCurrent: number | null): MultipleSummary | null {
+  const clean = normalizeMultipleSeries(series);
+  if (clean.length === 0) {
+    if (proxyCurrent !== null && proxyCurrent > 0) {
+      return {
+        median: proxyCurrent,
+        p25: proxyCurrent,
+        p75: proxyCurrent,
+        cv: null,
+        count: 1,
+        stable: true,
+        isProxy: true,
+      };
+    }
+    return null;
+  }
+  const median = simpleQuantile(clean, 0.5);
+  const p25 = simpleQuantile(clean, 0.25);
+  const p75 = simpleQuantile(clean, 0.75);
+  const mean = clean.reduce((s, v) => s + v, 0) / clean.length;
+  const cv = mean !== 0 ? stddev(clean) / Math.abs(mean) : null;
+  const stable = clean.length < 3 ? true : cv !== null && cv <= 0.45;
+  return {
+    median,
+    p25,
+    p75,
+    cv,
+    count: clean.length,
+    stable,
+    isProxy: false,
+  };
+}
+
+function confidenceFromSummary(summary: MultipleSummary): "low" | "medium" | "high" {
+  if (summary.isProxy) return "low";
+  if (summary.count >= 6 && summary.stable) return "high";
+  if (summary.count >= 3 && summary.stable) return "medium";
+  return "low";
+}
+
+function applyPeerCrossCheck(
+  baseConfidence: "low" | "medium" | "high",
+  ownMedian: number,
+  peerMultiple: number | null,
+): { confidence: "low" | "medium" | "high"; peerDeltaPct: number | null } {
+  if (peerMultiple === null || ownMedian <= 0) {
+    return { confidence: baseConfidence, peerDeltaPct: null };
+  }
+  const delta = Math.abs(peerMultiple - ownMedian) / ownMedian;
+  if (delta > 0.6) return { confidence: "low", peerDeltaPct: Number(delta.toFixed(3)) };
+  if (delta > 0.3 && baseConfidence === "high") return { confidence: "medium", peerDeltaPct: Number(delta.toFixed(3)) };
+  return { confidence: baseConfidence, peerDeltaPct: Number(delta.toFixed(3)) };
+}
+
 /** Imputed current EV from price × shares + netDebt */
 function currentEV(input: FairValueInput): number | null {
   const { currentPrice, sharesOutstanding, netDebt } = input;
@@ -134,50 +208,70 @@ function revenueTTM(input: FairValueInput): number | null {
 
 function computeEvSales(input: FairValueInput): FairValueMethodResult {
   const { peerMedians, keyMetrics, netDebt, sharesOutstanding } = input;
-  const peer_multiple = peerMedians.ev_sales;
   const rev = revenueTTM(input);
   const shares = sharesOutstanding;
+  const ownSummary = summarizeMultipleSeries(input.ownHistoricalMultiples?.ev_sales, keyMetrics.ev_sales ?? null);
 
-  if (peer_multiple === null || rev === null || rev <= 0 || shares === null || shares <= 0) {
+  if (ownSummary === null || rev === null || rev <= 0 || shares === null || shares <= 0) {
     return {
       name: "ev_sales",
       applicable: false,
       value: null,
       weight: 0,
       confidence: "low",
-      rationale: "Nicht anwendbar: fehlende Peer-Daten oder Revenue",
-      inputs: { peer_multiple, revenue_ttm: rev, shares },
+      rationale: "Nicht anwendbar: fehlende eigene Multiple-Historie oder Revenue",
+      inputs: {
+        own_hist_count: ownSummary?.count ?? null,
+        revenue_ttm: rev,
+        shares,
+      },
     };
   }
 
-  const ownGrowth = keyMetrics.revenue_growth_yoy ?? null;
-  const peerGrowth = peerMedians.revenue_growth_yoy;
-  let growth_adjust = 1.0;
-  let confidence: "low" | "medium" | "high" = "high";
-  if (peerGrowth === null || peerGrowth <= 0 || ownGrowth === null) {
-    growth_adjust = 1.0;
-    confidence = "medium";
-  } else {
-    growth_adjust = clamp(ownGrowth / peerGrowth, 0.6, 1.6);
+  if (!ownSummary.stable && !ownSummary.isProxy) {
+    return {
+      name: "ev_sales",
+      applicable: false,
+      value: null,
+      weight: 0,
+      confidence: "low",
+      rationale: "Nicht anwendbar: eigene EV/Sales-Historie zu volatil",
+      inputs: {
+        own_hist_count: ownSummary.count,
+        own_cv: ownSummary.cv !== null ? Number(ownSummary.cv.toFixed(3)) : null,
+        own_p25: Number(ownSummary.p25.toFixed(2)),
+        own_p75: Number(ownSummary.p75.toFixed(2)),
+      },
+    };
   }
 
-  const adjusted_multiple = peer_multiple * growth_adjust;
+  const own_multiple = ownSummary.median;
+  const peer_multiple = peerMedians.ev_sales;
+  const peerCheck = applyPeerCrossCheck(confidenceFromSummary(ownSummary), own_multiple, peer_multiple);
+
+  const adjusted_multiple = own_multiple;
   const implied_ev = adjusted_multiple * rev;
   const implied_equity = implied_ev - (netDebt ?? 0);
   const value = implied_equity / shares;
 
-  const rationale = `EV/Sales ${peer_multiple.toFixed(1)}× adj ${growth_adjust.toFixed(2)} → $${value.toFixed(0)}/Aktie`.slice(0, 90);
+  const rationale = `EV/Sales own-med ${own_multiple.toFixed(1)}x → $${value.toFixed(0)}/Aktie`.slice(0, 90);
 
   return {
     name: "ev_sales",
     applicable: true,
     value: Number(value.toFixed(2)),
-    weight: confidence === "high" ? 1.0 : 0.7,
-    confidence,
+    weight: peerCheck.confidence === "high" ? 1.0 : peerCheck.confidence === "medium" ? 0.7 : 0.4,
+    confidence: peerCheck.confidence,
     rationale,
     inputs: {
+      own_hist_count: ownSummary.count,
+      own_multiple_median: Number(own_multiple.toFixed(2)),
+      own_p25: Number(ownSummary.p25.toFixed(2)),
+      own_p75: Number(ownSummary.p75.toFixed(2)),
+      own_cv: ownSummary.cv !== null ? Number(ownSummary.cv.toFixed(3)) : null,
+      used_proxy_current: ownSummary.isProxy ? 1 : 0,
       peer_multiple,
-      growth_adjust: Number(growth_adjust.toFixed(3)),
+      peer_delta_pct: peerCheck.peerDeltaPct,
       adjusted_multiple: Number(adjusted_multiple.toFixed(2)),
       revenue_ttm: Number(rev.toFixed(0)),
       implied_ev: Number(implied_ev.toFixed(0)),
@@ -191,13 +285,14 @@ function computeEvSales(input: FairValueInput): FairValueMethodResult {
 
 function computeEvGrossProfit(input: FairValueInput): FairValueMethodResult {
   const { peerMedians, keyMetrics, netDebt, sharesOutstanding } = input;
+  const ownSummary = summarizeMultipleSeries(input.ownHistoricalMultiples?.ev_gross_profit, keyMetrics.ev_gross_profit ?? null);
   const peer_multiple = peerMedians.ev_gross_profit;
   const rev = revenueTTM(input);
   const gross_margin = keyMetrics.gross_margin ?? null;
   const shares = sharesOutstanding;
 
   if (
-    peer_multiple === null ||
+    ownSummary === null ||
     rev === null ||
     rev <= 0 ||
     gross_margin === null ||
@@ -211,8 +306,30 @@ function computeEvGrossProfit(input: FairValueInput): FairValueMethodResult {
       value: null,
       weight: 0,
       confidence: "low",
-      rationale: "Nicht anwendbar: fehlende Peer-Daten, Gross Profit negativ oder Daten fehlen",
-      inputs: { peer_multiple, revenue_ttm: rev, gross_margin, shares },
+      rationale: "Nicht anwendbar: fehlende eigene Multiple-Historie oder Gross Profit",
+      inputs: {
+        own_hist_count: ownSummary?.count ?? null,
+        revenue_ttm: rev,
+        gross_margin,
+        shares,
+      },
+    };
+  }
+
+  if (!ownSummary.stable && !ownSummary.isProxy) {
+    return {
+      name: "ev_gross_profit",
+      applicable: false,
+      value: null,
+      weight: 0,
+      confidence: "low",
+      rationale: "Nicht anwendbar: eigene EV/GP-Historie zu volatil",
+      inputs: {
+        own_hist_count: ownSummary.count,
+        own_cv: ownSummary.cv !== null ? Number(ownSummary.cv.toFixed(3)) : null,
+        own_p25: Number(ownSummary.p25.toFixed(2)),
+        own_p75: Number(ownSummary.p75.toFixed(2)),
+      },
     };
   }
 
@@ -229,34 +346,33 @@ function computeEvGrossProfit(input: FairValueInput): FairValueMethodResult {
     };
   }
 
-  const peerGrossMargin = peerMedians.gross_margin;
-  let margin_adjust = 1.0;
-  let confidence: "low" | "medium" | "high" = "high";
-  if (peerGrossMargin === null || peerGrossMargin <= 0) {
-    margin_adjust = 1.0;
-    confidence = "medium";
-  } else {
-    margin_adjust = clamp(gross_margin / peerGrossMargin, 0.7, 1.4);
-  }
+  const own_multiple = ownSummary.median;
+  const peerCheck = applyPeerCrossCheck(confidenceFromSummary(ownSummary), own_multiple, peer_multiple);
 
-  const adjusted_multiple = peer_multiple * margin_adjust;
+  const adjusted_multiple = own_multiple;
   const implied_ev = adjusted_multiple * gross_profit_ttm;
   const implied_equity = implied_ev - (netDebt ?? 0);
   const value = implied_equity / shares;
 
-  const rationale = `EV/GP ${peer_multiple.toFixed(1)}× adj ${margin_adjust.toFixed(2)} → $${value.toFixed(0)}/Aktie`.slice(0, 90);
+  const rationale = `EV/GP own-med ${own_multiple.toFixed(1)}x → $${value.toFixed(0)}/Aktie`.slice(0, 90);
 
   return {
     name: "ev_gross_profit",
     applicable: true,
     value: Number(value.toFixed(2)),
-    weight: confidence === "high" ? 1.0 : 0.7,
-    confidence,
+    weight: peerCheck.confidence === "high" ? 1.0 : peerCheck.confidence === "medium" ? 0.7 : 0.4,
+    confidence: peerCheck.confidence,
     rationale,
     inputs: {
+      own_hist_count: ownSummary.count,
+      own_multiple_median: Number(own_multiple.toFixed(2)),
+      own_p25: Number(ownSummary.p25.toFixed(2)),
+      own_p75: Number(ownSummary.p75.toFixed(2)),
+      own_cv: ownSummary.cv !== null ? Number(ownSummary.cv.toFixed(3)) : null,
+      used_proxy_current: ownSummary.isProxy ? 1 : 0,
       peer_multiple,
+      peer_delta_pct: peerCheck.peerDeltaPct,
       gross_profit_ttm: Number(gross_profit_ttm.toFixed(0)),
-      margin_adjust: Number(margin_adjust.toFixed(3)),
       adjusted_multiple: Number(adjusted_multiple.toFixed(2)),
       net_debt: netDebt,
       shares,
@@ -269,13 +385,14 @@ function computeEvGrossProfit(input: FairValueInput): FairValueMethodResult {
 function computeForwardPE(input: FairValueInput): FairValueMethodResult {
   const { peerMedians, keyMetrics, currentPrice } = input;
   const ntm_pe = keyMetrics.ntm_pe ?? null;
+  const ownSummary = summarizeMultipleSeries(input.ownHistoricalMultiples?.forward_pe, ntm_pe);
   const peer_multiple = peerMedians.forward_pe;
   const price = currentPrice;
 
   if (
+    ownSummary === null ||
     ntm_pe === null ||
     ntm_pe <= 0 ||
-    peer_multiple === null ||
     price === null ||
     price <= 0
   ) {
@@ -285,39 +402,55 @@ function computeForwardPE(input: FairValueInput): FairValueMethodResult {
       value: null,
       weight: 0,
       confidence: "low",
-      rationale: "Nicht anwendbar: negative Forward-Earnings oder fehlende Peer-Daten",
-      inputs: { ntm_pe, peer_multiple, current_price: price },
+      rationale: "Nicht anwendbar: fehlende eigene P/E-Historie oder negative Forward-Earnings",
+      inputs: { own_hist_count: ownSummary?.count ?? null, ntm_pe, current_price: price },
+    };
+  }
+
+  if (!ownSummary.stable && !ownSummary.isProxy) {
+    return {
+      name: "forward_pe",
+      applicable: false,
+      value: null,
+      weight: 0,
+      confidence: "low",
+      rationale: "Nicht anwendbar: eigene P/E-Historie zu volatil",
+      inputs: {
+        own_hist_count: ownSummary.count,
+        own_cv: ownSummary.cv !== null ? Number(ownSummary.cv.toFixed(3)) : null,
+        own_p25: Number(ownSummary.p25.toFixed(2)),
+        own_p75: Number(ownSummary.p75.toFixed(2)),
+      },
     };
   }
 
   const ntm_eps = price / ntm_pe;
-  const ownGrowth = keyMetrics.revenue_growth_yoy ?? null;
-  let peg_adjust = 1.0;
-  let confidence: "low" | "medium" | "high" = "high";
-  if (ownGrowth === null) {
-    peg_adjust = 1.0;
-    confidence = "medium";
-  } else {
-    peg_adjust = clamp(ownGrowth / 0.10, 0.7, 1.5);
-  }
+  const own_multiple = ownSummary.median;
+  const peerCheck = applyPeerCrossCheck(confidenceFromSummary(ownSummary), own_multiple, peer_multiple);
 
-  const adjusted_multiple = peer_multiple * peg_adjust;
+  const adjusted_multiple = own_multiple;
   const value = adjusted_multiple * ntm_eps;
 
-  const rationale = `Fwd P/E ${peer_multiple.toFixed(1)}× PEG-adj ${peg_adjust.toFixed(2)} → $${value.toFixed(0)}/Aktie`.slice(0, 90);
+  const rationale = `Fwd P/E own-med ${own_multiple.toFixed(1)}x → $${value.toFixed(0)}/Aktie`.slice(0, 90);
 
   return {
     name: "forward_pe",
     applicable: true,
     value: Number(value.toFixed(2)),
-    weight: confidence === "high" ? 1.0 : 0.7,
-    confidence,
+    weight: peerCheck.confidence === "high" ? 1.0 : peerCheck.confidence === "medium" ? 0.7 : 0.4,
+    confidence: peerCheck.confidence,
     rationale,
     inputs: {
+      own_hist_count: ownSummary.count,
+      own_multiple_median: Number(own_multiple.toFixed(2)),
+      own_p25: Number(ownSummary.p25.toFixed(2)),
+      own_p75: Number(ownSummary.p75.toFixed(2)),
+      own_cv: ownSummary.cv !== null ? Number(ownSummary.cv.toFixed(3)) : null,
+      used_proxy_current: ownSummary.isProxy ? 1 : 0,
       ntm_pe,
       ntm_eps: Number(ntm_eps.toFixed(4)),
       peer_multiple,
-      peg_adjust: Number(peg_adjust.toFixed(3)),
+      peer_delta_pct: peerCheck.peerDeltaPct,
       adjusted_multiple: Number(adjusted_multiple.toFixed(2)),
     },
   };
@@ -346,13 +479,13 @@ function buildRationale(
   methodNames: string[],
   cv: number | null,
   confidence: "low" | "medium" | "high",
-  hasPeerMismatch: boolean,
+  peerCrossCheckUsed: boolean,
 ): string {
   const names = methodNames.join(", ");
   const cvStr = cv !== null ? `Streuung ${(cv * 100).toFixed(0)}%.` : "Nur 1 Methode.";
   const confStr = `Confidence ${confidence}.`;
-  const mismatch = hasPeerMismatch ? " Currency-Mismatch-Warnung." : "";
-  return `Aggregat aus ${methodCount} Methode(n) (${names}). ${cvStr} ${confStr}${mismatch}`.slice(0, 120);
+  const crossCheck = peerCrossCheckUsed ? " Peer-Cross-Check aktiv." : "";
+  return `Aggregat aus ${methodCount} Methode(n) (${names}). ${cvStr} ${confStr}${crossCheck}`.slice(0, 120);
 }
 
 // ─── Main export ──────────────────────────────────────────────────────────────
@@ -366,9 +499,10 @@ export function computeFairValue(input: FairValueInput): FairValueResult {
 
   const applicable = methods.filter((m) => m.applicable && m.value !== null);
 
-  // Detect currency mismatch heuristic (no cross-rate available; flag if currency ≠ USD)
-  // Only warn — don't block the engine
-  const hasPeerMismatch = input.currency !== "USD" && input.peerMedians.ev_sales !== null;
+  const peerCrossCheckUsed =
+    input.peerMedians.ev_sales !== null ||
+    input.peerMedians.ev_gross_profit !== null ||
+    input.peerMedians.forward_pe !== null;
 
   // No applicable methods
   if (applicable.length === 0) {
@@ -384,7 +518,7 @@ export function computeFairValue(input: FairValueInput): FairValueResult {
       reverse_dcf: input.reverseDcf ?? null,
       confidence: "low",
       applicable_method_count: 0,
-      rationale_short: "Keine Methode anwendbar (fehlende Peer-Daten oder Bilanzgrößen).",
+      rationale_short: "Keine Methode anwendbar (fehlende eigene Historie oder Bilanzgroessen).",
       asof: input.asof,
     };
   }
@@ -398,9 +532,9 @@ export function computeFairValue(input: FairValueInput): FairValueResult {
   let range_high: number;
 
   if (applicable.length === 1) {
-    // Artificial ±8% range for single-method
-    range_low = Number((point_estimate * 0.92).toFixed(2));
-    range_high = Number((point_estimate * 1.08).toFixed(2));
+    const band = FAIR_VALUE_ASSUMPTIONS.singleMethodRangePct;
+    range_low = Number((point_estimate * (1 - band)).toFixed(2));
+    range_high = Number((point_estimate * (1 + band)).toFixed(2));
   } else {
     range_low = Number(simpleQuantile(values, 0.25).toFixed(2));
     range_high = Number(simpleQuantile(values, 0.75).toFixed(2));
@@ -419,10 +553,6 @@ export function computeFairValue(input: FairValueInput): FairValueResult {
     confidence = "low";
   }
 
-  // Enforce low confidence when peer data missing or currency mismatch
-  if (input.peerMedians.ev_sales === null || hasPeerMismatch) {
-    confidence = "low";
-  }
   // Single method also forces low
   if (applicable.length === 1) {
     confidence = "low";
@@ -449,7 +579,7 @@ export function computeFairValue(input: FairValueInput): FairValueResult {
     methodNames,
     applicable.length > 1 ? cv : null,
     confidence,
-    hasPeerMismatch,
+    peerCrossCheckUsed,
   );
 
   return {

@@ -208,6 +208,8 @@ export async function chatJSONOpenRouter<T = unknown>(
     appendAudit({
       runId: opts.runId,
       step: opts.step,
+      provider: "openrouter",
+      requestedModel: model,
       model: usedModel,
       temperature,
       promptHash,
@@ -221,5 +223,18 @@ export async function chatJSONOpenRouter<T = unknown>(
     });
   }
 
-  return { data: parsed as T, raw, ms: Date.now() - t0, promptHash };
+  return {
+    data: parsed as T,
+    raw,
+    ms: Date.now() - t0,
+    promptHash,
+    model,
+    effectiveModel: usedModel,
+    provider: "openrouter",
+    usage: {
+      promptTokens: tokensIn,
+      completionTokens: tokensOut,
+      totalTokens: (tokensIn ?? 0) + (tokensOut ?? 0),
+    },
+  };
 }

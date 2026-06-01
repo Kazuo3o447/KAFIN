@@ -71,6 +71,7 @@ const BLOCK_WEAKNESS: Record<BlockKey, string> = {
   valuation:                      "Bewertung vorgelaufen",
   capital_discipline_dilution:    "Verwässerung beobachten",
   catalysts_revisions_sentiment:  "Sentiment fehlt",
+  ownership_smart_money:          "Ownership-Signale schwach",
   risk_fragility:                 "Fragilität",
 };
 
@@ -86,7 +87,8 @@ export function findWeakestBlock(
 
   for (const key of Object.keys(w) as BlockKey[]) {
     const max = w[key];
-    const actual = scoreBreakdown[key] ?? 0;
+    const actual = scoreBreakdown[key];
+    if (typeof actual !== "number") continue;
     const relativeGap = max > 0 ? (max - actual) / max : 0;
     if (relativeGap > worstGap) {
       worstGap = relativeGap;

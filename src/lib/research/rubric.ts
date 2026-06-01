@@ -295,10 +295,48 @@ export const RESEARCH_BLOCK_RUBRIC: Record<BlockKey, BlockRubric> = {
       "Insider verkaufen aggressiv nach positiven Meldungen.",
     ],
   },
+  ownership_smart_money: {
+    id: "ownership_smart_money",
+    researchSection: "research.md Paragraph 16",
+    title: "G - Ownership & Smart Money",
+    maxWeight: 8,
+    purpose: "Unterstuetzen Kapitalstroeme und Insider-Signale die These?",
+    indicators: [
+      {
+        key: "insider_cluster_buying",
+        label: "Insider Cluster Buying / Nettoaktivitaet",
+        guidance: "Bewerte Cluster-Kaeufe, Insider-Nettofluss und Management-Beteiligung.",
+      },
+      {
+        key: "institutional_flow_trend",
+        label: "Institutioneller Trend",
+        guidance: "Bewerte, ob Institutionelle akkumulieren oder distribuieren.",
+      },
+      {
+        key: "short_interest_context",
+        label: "Short-Interest-Kontext",
+        guidance: "Unterscheide fragiles Short-Risiko von konstruktivem Squeeze-Setup.",
+      },
+      {
+        key: "buyback_vs_dilution",
+        label: "Buyback vs. Verwässerung",
+        guidance: "Bewerte, ob Rueckkaeufe echte Verwässerung neutralisieren oder nur SBC decken.",
+      },
+    ],
+    scoringGuide: [
+      "Hoher Score bei Cluster-Buying, positiver institutioneller Tendenz und kontrollierter Verwässerung.",
+      "Niedriger Score bei aggressivem Insider-Verkauf, Distribution und steigendem Short-Risiko.",
+    ],
+    redFlags: [
+      "Hoher Short-Float ohne positives Setup.",
+      "Insider verkaufen in Serie waehrend positiver News-Lage.",
+      "Anhaltende Verwässerung ohne glaubwuerdigen Buyback-Effekt.",
+    ],
+  },
   risk_fragility: {
     id: "risk_fragility",
     researchSection: "research.md Paragraph 16",
-    title: "G - Risk & Fragility",
+    title: "H - Risk & Fragility",
     maxWeight: 12,
     purpose: "Was kann die These zerstoeren?",
     indicators: [

@@ -1,6 +1,6 @@
 "use client";
 /**
- * Settings – LLM-Provider-Umschalter (Ollama ↔ DeepSeek) + Ollama-Konfiguration.
+ * Settings – LLM-Provider-Umschalter (LM Studio ↔ DeepSeek) + lokale Konfiguration.
  * LLM-Einstellungen werden server-seitig in der DB gespeichert (/api/settings).
  */
 import { useEffect, useState } from "react";
@@ -10,10 +10,10 @@ import { showToast } from "@/components/Toast";
 
 const LS = {
   defaultModel: "kafin.defaultModel",
-  ollamaBaseUrl: "kafin.ollamaBaseUrl",
+  lmStudioBaseUrl: "kafin.lmStudioBaseUrl",
 };
 
-type Provider = "ollama" | "deepseek" | "openrouter";
+type Provider = "lmstudio" | "deepseek" | "groq";
 
 async function apiGet(key: string): Promise<unknown> {
   const res = await fetch(`/api/settings?key=${encodeURIComponent(key)}`);
@@ -31,16 +31,16 @@ async function apiSet(key: string, value: unknown): Promise<void> {
 }
 
 export default function SettingsPage() {
-  // Ollama (localStorage)
+  // LM Studio (localStorage)
   const [model, setModel] = useState("");
-  const [ollamaUrl, setOllamaUrl] = useState("http://localhost:11434");
+  const [lmStudioUrl, setLmStudioUrl] = useState("http://localhost:1234");
 
   // LLM-Provider (server-seitig)
-  const [provider, setProvider] = useState<Provider>("ollama");
+  const [provider, setProvider] = useState<Provider>("lmstudio");
   const [deepseekKey, setDeepseekKey] = useState("");
   const [deepseekModel, setDeepseekModel] = useState("deepseek-chat");
-  const [openrouterKey, setOpenrouterKey] = useState("");
-  const [openrouterModel, setOpenrouterModel] = useState("openrouter/free");
+  const [groqKey, setGroqKey] = useState("");
+  const [groqModel, setGroqModel] = useState("meta-llama/llama-4-scout-17b-16e-instruct");
   const [showKey, setShowKey] = useState(false);
 
   const [loaded, setLoaded] = useState(false);
@@ -51,21 +51,23 @@ export default function SettingsPage() {
   useEffect(() => {
     // Lokale Einstellungen
     setModel(localStorage.getItem(LS.defaultModel) ?? "");
-    setOllamaUrl(localStorage.getItem(LS.ollamaBaseUrl) ?? "http://localhost:11434");
+    setLmStudioUrl(localStorage.getItem(LS.lmStudioBaseUrl) ?? "http://localhost:1234");
 
     // Server-seitige LLM-Einstellungen laden
     Promise.all([
       apiGet("llm_provider"),
       apiGet("deepseek_api_key"),
       apiGet("deepseek_model"),
-      apiGet("openrouter_api_key"),
-      apiGet("openrouter_model"),
-    ]).then(([prov, key, mdl, orKey, orMdl]) => {
-      if (prov === "deepseek" || prov === "ollama" || prov === "openrouter") setProvider(prov);
+      apiGet("groq_api_key"),
+      apiGet("groq_model"),
+    ]).then(([prov, key, mdl, gKey, gMdl]) => {
+      if (prov === "deepseek" || prov === "lmstudio" || prov === "groq" || prov === "ollama") {
+        setProvider(prov === "ollama" ? "lmstudio" : prov);
+      }
       if (typeof key === "string" && key) setDeepseekKey(key);
       if (typeof mdl === "string" && mdl) setDeepseekModel(mdl);
-      if (typeof orKey === "string" && orKey) setOpenrouterKey(orKey);
-      if (typeof orMdl === "string" && orMdl) setOpenrouterModel(orMdl);
+      if (typeof gKey === "string" && gKey) setGroqKey(gKey);
+      if (typeof gMdl === "string" && gMdl) setGroqModel(gMdl);
       setLoaded(true);
     });
   }, []);
@@ -76,7 +78,7 @@ export default function SettingsPage() {
     try {
       // Lokale Einstellungen
       localStorage.setItem(LS.defaultModel, model);
-      localStorage.setItem(LS.ollamaBaseUrl, ollamaUrl);
+      localStorage.setItem(LS.lmStudioBaseUrl, lmStudioUrl);
 
       // LLM-Provider server-seitig speichern
       await apiSet("llm_provider", provider);
@@ -84,9 +86,9 @@ export default function SettingsPage() {
         await apiSet("deepseek_api_key", deepseekKey.trim());
         await apiSet("deepseek_model", deepseekModel.trim() || "deepseek-chat");
       }
-      if (provider === "openrouter") {
-        await apiSet("openrouter_api_key", openrouterKey.trim());
-        await apiSet("openrouter_model", openrouterModel.trim() || "openrouter/free");
+      if (provider === "groq") {
+        await apiSet("groq_api_key", groqKey.trim());
+        await apiSet("groq_model", groqModel.trim() || "meta-llama/llama-4-scout-17b-16e-instruct");
       }
 
       showToast("Einstellungen gespeichert", "success");
@@ -104,9 +106,9 @@ export default function SettingsPage() {
       await apiSet("deepseek_api_key", deepseekKey.trim());
       await apiSet("deepseek_model", deepseekModel.trim() || "deepseek-chat");
     }
-    if (provider === "openrouter") {
-      await apiSet("openrouter_api_key", openrouterKey.trim());
-      await apiSet("openrouter_model", openrouterModel.trim() || "openrouter/free");
+    if (provider === "groq") {
+      await apiSet("groq_api_key", groqKey.trim());
+      await apiSet("groq_model", groqModel.trim() || "meta-llama/llama-4-scout-17b-16e-instruct");
     }
     setTesting(true);
     setTestResult(null);
@@ -139,14 +141,14 @@ export default function SettingsPage() {
         {/* Toggle */}
         <div className="flex items-center gap-2 p-1 bg-secondary-900 rounded-lg w-fit border border-secondary-700">
           <button
-            onClick={() => setProvider("ollama")}
+            onClick={() => setProvider("lmstudio")}
             className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
-              provider === "ollama"
+              provider === "lmstudio"
                 ? "bg-primary-600 text-white shadow"
                 : "text-secondary-400 hover:text-secondary-200"
             }`}
           >
-            Ollama (lokal)
+            LM Studio (lokal)
           </button>
           <button
             onClick={() => setProvider("deepseek")}
@@ -159,19 +161,19 @@ export default function SettingsPage() {
             DeepSeek API
           </button>
           <button
-            onClick={() => setProvider("openrouter")}
+            onClick={() => setProvider("groq")}
             className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
-              provider === "openrouter"
+              provider === "groq"
                 ? "bg-violet-600 text-white shadow"
                 : "text-secondary-400 hover:text-secondary-200"
             }`}
           >
-            OpenRouter
+            Groq
           </button>
         </div>
 
-        {/* Ollama-spezifisch */}
-        {provider === "ollama" && (
+        {/* LM-Studio-spezifisch */}
+        {provider === "lmstudio" && (
           <div className="space-y-4 pt-1">
             <div>
               <label className="text-xs uppercase tracking-wide text-secondary-500">Default-Modell</label>
@@ -180,14 +182,14 @@ export default function SettingsPage() {
               </div>
             </div>
             <div>
-              <label className="text-xs uppercase tracking-wide text-secondary-500">Ollama Base URL</label>
+              <label className="text-xs uppercase tracking-wide text-secondary-500">LM Studio Base URL</label>
               <input
-                value={ollamaUrl}
-                onChange={(e) => setOllamaUrl(e.target.value)}
+                value={lmStudioUrl}
+                onChange={(e) => setLmStudioUrl(e.target.value)}
                 className="mt-1 w-full bg-secondary-900 border border-secondary-700 rounded-md px-3 py-2 text-sm font-mono focus:border-accent-500 outline-none"
               />
               <p className="text-xs text-secondary-500 mt-1">
-                Server-Default aus <code className="font-mono">OLLAMA_BASE_URL</code>.
+                Server-Default aus <code className="font-mono">LM_STUDIO_BASE_URL</code>.
               </p>
             </div>
           </div>
@@ -234,17 +236,17 @@ export default function SettingsPage() {
           </div>
         )}
 
-        {/* OpenRouter-spezifisch */}
-        {provider === "openrouter" && (
+        {/* Groq-spezifisch */}
+        {provider === "groq" && (
           <div className="space-y-4 pt-1">
             <div>
               <label className="text-xs uppercase tracking-wide text-secondary-500">API Key</label>
               <div className="mt-1 relative">
                 <input
                   type={showKey ? "text" : "password"}
-                  value={openrouterKey}
-                  onChange={(e) => setOpenrouterKey(e.target.value)}
-                  placeholder="sk-or-v1-..."
+                  value={groqKey}
+                  onChange={(e) => setGroqKey(e.target.value)}
+                  placeholder="gsk_..."
                   className="w-full bg-secondary-900 border border-secondary-700 rounded-md px-3 py-2 text-sm font-mono focus:border-violet-500 outline-none pr-20"
                 />
                 <button
@@ -262,21 +264,21 @@ export default function SettingsPage() {
             <div>
               <label className="text-xs uppercase tracking-wide text-secondary-500">Modell</label>
               <input
-                value={openrouterModel}
-                onChange={(e) => setOpenrouterModel(e.target.value)}
-                placeholder="openrouter/free"
+                value={groqModel}
+                onChange={(e) => setGroqModel(e.target.value)}
+                placeholder="meta-llama/llama-4-scout-17b-16e-instruct"
                 className="mt-1 w-full bg-secondary-900 border border-secondary-700 rounded-md px-3 py-2 text-sm font-mono focus:border-violet-500 outline-none"
               />
               <p className="text-xs text-secondary-500 mt-1">
-                Für die Testphase: <code className="font-mono">openrouter/free</code>.{" "}
+                Empfohlen: <code className="font-mono">meta-llama/llama-4-scout-17b-16e-instruct</code>.{" "}
                 Vollständige Liste auf{" "}
                 <a
-                  href="https://openrouter.ai/models"
+                  href="https://console.groq.com/docs/models"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="underline hover:text-secondary-200"
                 >
-                  openrouter.ai/models
+                  console.groq.com/docs/models
                 </a>
                 .
               </p>

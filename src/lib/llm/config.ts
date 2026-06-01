@@ -1,26 +1,26 @@
 /**
  * LLM-Provider-Konfiguration. Liest Provider-Einstellungen aus der Settings-Tabelle.
- * Unterstützt "ollama" (lokal), "deepseek" und "openrouter" (Cloud-API).
+ * Unterstützt "lmstudio" (lokal), "deepseek" und "groq" (Cloud-API).
  */
 import { db, schema } from "@/lib/storage/db";
 import { eq } from "drizzle-orm";
 
-export type LLMProvider = "ollama" | "deepseek" | "openrouter";
+export type LLMProvider = "lmstudio" | "deepseek" | "groq";
 
 export interface LLMConfig {
   provider: LLMProvider;
   deepseekApiKey: string;
   deepseekModel: string;
-  openrouterApiKey: string;
-  openrouterModel: string;
+  groqApiKey: string;
+  groqModel: string;
 }
 
 const DEFAULTS: LLMConfig = {
-  provider: "ollama",
+  provider: "lmstudio",
   deepseekApiKey: "",
   deepseekModel: "deepseek-chat",
-  openrouterApiKey: "",
-  openrouterModel: "openrouter/free",
+  groqApiKey: "",
+  groqModel: "meta-llama/llama-4-scout-17b-16e-instruct",
 };
 
 let cache: { ts: number; config: LLMConfig } | null = null;
@@ -37,15 +37,21 @@ function readKey(key: string): string | null {
   }
 }
 
+function normalizeProvider(value: string | null): LLMProvider {
+  if (value === "deepseek" || value === "groq" || value === "lmstudio") return value;
+  if (value === "ollama") return "lmstudio";
+  return DEFAULTS.provider;
+}
+
 /** Liest LLM-Konfiguration aus der DB (10 s gecacht). */
 export function getLLMConfig(): LLMConfig {
   if (cache && Date.now() - cache.ts < TTL_MS) return cache.config;
   const config: LLMConfig = {
-    provider: (readKey("llm_provider") as LLMProvider | null) ?? DEFAULTS.provider,
+    provider: normalizeProvider(readKey("llm_provider")),
     deepseekApiKey: readKey("deepseek_api_key") ?? DEFAULTS.deepseekApiKey,
     deepseekModel: readKey("deepseek_model") ?? DEFAULTS.deepseekModel,
-    openrouterApiKey: readKey("openrouter_api_key") ?? DEFAULTS.openrouterApiKey,
-    openrouterModel: readKey("openrouter_model") ?? DEFAULTS.openrouterModel,
+    groqApiKey: readKey("groq_api_key") ?? DEFAULTS.groqApiKey,
+    groqModel: readKey("groq_model") ?? DEFAULTS.groqModel,
   };
   cache = { ts: Date.now(), config };
   return config;

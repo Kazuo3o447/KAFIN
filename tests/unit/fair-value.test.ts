@@ -32,12 +32,18 @@ function makeInput(overrides?: Partial<FairValueInput>): FairValueInput {
       gross_margin: 0.72,
       ntm_pe: 40,
       ev_sales: 8.0,
+      ev_gross_profit: 11.1,
     },
     businessModel: "SaaS",
     peerMedians: PEER_MEDIANS,
     netDebt: -500,
     sharesOutstanding: 100,
     revenueTtm: 1812.5,   // explicit, breaks circular dependency
+    ownHistoricalMultiples: {
+      ev_sales: [7.6, 8.1, 8.3, 7.9, 8.0],
+      ev_gross_profit: [10.8, 11.2, 11.1, 10.9, 11.0],
+      forward_pe: [33, 34, 35, 32, 34],
+    },
     ...overrides,
   };
 }
@@ -52,24 +58,17 @@ describe("computeFairValue", () => {
     expect(result.point_estimate).toBeGreaterThan(0);
   });
 
-  it("drei konsistente Methoden → confidence high wenn CV < 10%", () => {
-    // Force consistent peer multiples so all three methods give similar values
+  it("stabile Eigenhistorie ueber mehrere Methoden → confidence mindestens medium", () => {
     const input = makeInput({
-      peerMedians: {
-        ...PEER_MEDIANS,
-        ev_sales: 8.0,          // adjusted_multiple ≈ 8 (growth 1.0)
-        ev_gross_profit: 11.1,  // 8 / 0.72
-        forward_pe: 32.0,       // close to ntm_pe
+      ownHistoricalMultiples: {
+        ev_sales: [7.8, 8.0, 8.1, 7.9, 8.0, 8.1],
+        ev_gross_profit: [10.9, 11.0, 11.1, 11.0, 10.8, 11.2],
+        forward_pe: [33, 34, 34, 33, 35, 34],
       },
     });
     const result = computeFairValue(input);
-    // Values will be close → CV low
-    if (result.applicable_method_count === 3 && result.confidence === "high") {
-      expect(result.confidence).toBe("high");
-    } else {
-      // medium is also acceptable when methods are close
-      expect(["high", "medium"]).toContain(result.confidence);
-    }
+    expect(result.applicable_method_count).toBe(3);
+    expect(["high", "medium"]).toContain(result.confidence);
   });
 
   it("nur EV/Sales verfügbar (negative Earnings, kein Gross Profit) → count=1, confidence=low, range=±8%", () => {
@@ -91,10 +90,10 @@ describe("computeFairValue", () => {
     }
   });
 
-  it("currency mismatch → confidence=low enforced, rationale mentions warning", () => {
+  it("currency mismatch blockiert nicht: Methoden bleiben anwendbar", () => {
     const result = computeFairValue(makeInput({ currency: "EUR" }));
-    expect(result.confidence).toBe("low");
-    expect(result.rationale_short).toContain("Currency-Mismatch");
+    expect(result.applicable_method_count).toBe(3);
+    expect(result.point_estimate).not.toBeNull();
   });
 
   it("saturation: current_price = 10× point_estimate → overvalued, upside_pct ≈ -0.9", () => {
@@ -114,6 +113,11 @@ describe("computeFairValue", () => {
     const result = computeFairValue(
       makeInput({
         keyMetrics: {},
+        ownHistoricalMultiples: {
+          ev_sales: [],
+          ev_gross_profit: [],
+          forward_pe: [],
+        },
         peerMedians: {
           ev_sales: null,
           ev_gross_profit: null,
@@ -178,6 +182,20 @@ describe("computeFairValue", () => {
     for (const m of result.methods) {
       expect(m.rationale.length).toBeLessThanOrEqual(90);
     }
+  });
+
+  it("verwirft instabile historische EV/Sales-Serien", () => {
+    const result = computeFairValue(
+      makeInput({
+        ownHistoricalMultiples: {
+          ev_sales: [2, 5, 12, 3, 15, 1],
+          ev_gross_profit: [10.8, 11.0, 11.2, 10.9],
+          forward_pe: [33, 34, 35, 34],
+        },
+      }),
+    );
+    const evSalesMethod = result.methods.find((m) => m.name === "ev_sales");
+    expect(evSalesMethod?.applicable).toBe(false);
   });
 
   it("fehlende sharesOutstanding → EV-basierte Methoden nicht anwendbar, Fwd P/E bleibt", () => {

@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 /**
  * Common Provider-Interface.
  * Jeder Adapter liefert "Fakten" (typed key-value mit Quelle) und ggf. raw Artefakte
@@ -13,6 +15,8 @@
  * - E   = Anekdotisch, niedrig priorisiert
  */
 export type SourceClass = "A" | "A-" | "B" | "B-" | "C" | "D" | "E";
+
+export const SourceClassSchema = z.enum(["A", "A-", "B", "B-", "C", "D", "E"]);
 
 export interface ProviderFact {
   /** semantischer Schlüssel z.B. "revenue_ttm", "share_count", "filing_10K_url" */
@@ -50,6 +54,10 @@ export interface ProviderContext {
   log?: (msg: string) => void;
   /** AbortSignal für Cancel */
   signal?: AbortSignal;
+  /** optional run-id for raw artifact persistence in V2 collectors */
+  runId?: string;
+  /** optional as-of for market context fetches */
+  asOf?: string;
 }
 
 export interface DataProvider {
@@ -58,4 +66,69 @@ export interface DataProvider {
   /** true wenn Adapter ohne Konfiguration nutzbar ist (z.B. Yahoo, EDGAR mit UA-Default) */
   available(): boolean;
   fetch(ctx: ProviderContext): Promise<ProviderResult>;
+}
+
+export type Capability =
+  | "fundamentals_annual"
+  | "fundamentals_quarterly"
+  | "estimates"
+  | "earnings_history"
+  | "prices"
+  | "insider"
+  | "institutional"
+  | "short_interest"
+  | "analyst"
+  | "segments"
+  | "macro"
+  | "symbol_resolution";
+
+export type MissingValueStatus =
+  | "available"
+  | "not_reported"
+  | "not_applicable"
+  | "fetch_failed"
+  | "rate_limited"
+  | "stale";
+
+export interface CapabilityFetchDiagnostic {
+  capability: Capability;
+  status: MissingValueStatus;
+  providerTried: string[];
+  providerUsed: string | null;
+  retries: number;
+  errors: string[];
+}
+
+export interface GatherDiagnostics {
+  capabilities: CapabilityFetchDiagnostic[];
+  incompleteDueToTechnicalFailure: boolean;
+  retryRecommended: boolean;
+}
+
+export interface Provenance {
+  source: string;
+  url: string;
+  klass: SourceClass;
+  asOf: string | null;
+  stale: boolean;
+}
+
+export interface ProviderFetchResultV2 {
+  provider: string;
+  capability: Capability;
+  ok: boolean;
+  data: unknown;
+  status?: MissingValueStatus;
+  provenance: Provenance[];
+  raw: RawArtifact[];
+  error?: string;
+  durationMs: number;
+}
+
+export interface DataProviderV2 {
+  name: string;
+  capabilities: Capability[];
+  available(): boolean;
+  priorityByCapability: Partial<Record<Capability, number>>;
+  fetch(cap: Capability, ctx: ProviderContext): Promise<ProviderFetchResultV2>;
 }

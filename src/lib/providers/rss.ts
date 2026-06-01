@@ -5,6 +5,7 @@
  */
 import Parser from "rss-parser";
 import type { DataProvider, ProviderContext, ProviderResult, ProviderFact } from "./types";
+import type { Capability, DataProviderV2, ProviderFetchResultV2 } from "./types";
 
 const parser = new Parser({
   timeout: 15000,
@@ -143,5 +144,24 @@ export const rssProvider: DataProvider = {
       const msg = err instanceof Error ? err.message : String(err);
       return { provider: "rss", ok: false, facts, raw, error: msg, durationMs: Date.now() - start };
     }
+  },
+};
+
+export const rssProviderV2: DataProviderV2 = {
+  name: "rss",
+  capabilities: [],
+  available: () => true,
+  priorityByCapability: {},
+  async fetch(cap: Capability): Promise<ProviderFetchResultV2> {
+    return {
+      provider: "rss",
+      capability: cap,
+      ok: false,
+      data: null,
+      provenance: [],
+      raw: [],
+      error: "unsupported_capability",
+      durationMs: 0,
+    };
   },
 };

@@ -11,5 +11,22 @@ const sqlite = new Database(dbPath);
 sqlite.pragma("journal_mode = WAL");
 sqlite.pragma("foreign_keys = ON");
 
+sqlite.exec(`
+	CREATE TABLE IF NOT EXISTS score_history (
+		id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+		report_id TEXT NOT NULL UNIQUE,
+		ticker TEXT NOT NULL,
+		research_date TEXT NOT NULL,
+		score_total INTEGER NOT NULL,
+		gate TEXT NOT NULL,
+		confidence TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		delta_from_previous INTEGER,
+		trend TEXT NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS score_history_ticker_date_idx ON score_history (ticker, research_date);
+	CREATE INDEX IF NOT EXISTS score_history_ticker_idx ON score_history (ticker);
+`);
+
 export const db: BetterSQLite3Database<typeof schema> = drizzle(sqlite, { schema });
 export { schema, sqlite };
