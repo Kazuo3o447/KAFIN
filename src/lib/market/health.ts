@@ -330,10 +330,21 @@ export function computeMarketHealth(input: MarketHealthInput): MarketHealth {
 
   const breadth = input.breadthPctAboveMa200 ?? null;
 
+  // Breadth-Proxy aus SPX MA200-Lage (wenn keine externe Breadth-Daten vorliegen)
+  const breadthFromMa200 =
+    breadth ??
+    (spy?.maTrend != null
+      ? spy.maTrend === "above_both"
+        ? 0.65   // Index über beiden MAs → Breadth-Proxy eher positiv
+        : spy.maTrend === "below_both"
+        ? 0.35
+        : 0.5
+      : null);
+
   // Score pillars
   const volatilityPillar = scoreVolatilityPillar(vix, vixPct1y, move);
   const creditPillar = scoreCreditPillar(hySpread, hyZ1y, hyZ3y, igSpread);
-  const breadthPillar = scoreBreadthPillar(breadth, spy, rsp);
+  const breadthPillar = scoreBreadthPillar(breadthFromMa200, spy, rsp);
 
   // Consensus rule: if all three point same direction → strongest signal
   const pillarStates = [volatilityPillar.state, creditPillar.state, breadthPillar.state];
@@ -397,6 +408,52 @@ export function computeMarketHealth(input: MarketHealthInput): MarketHealth {
     quotes
   );
 
+  // Momentum-Composite aus verfügbaren Quote-Daten
+  // Preis-RS: 52w-Hoch-Nähe + MA-Trend (Proxy, bis historische Returns via FMP/Yahoo-Chart vorliegen)
+  const spxQuote = bySymbol.get("^GSPC") ?? null;
+  const near52wHigh =
+    spxQuote?.price != null && spxQuote.high52w != null && spxQuote.high52w > 0
+      ? ((spxQuote.price - spxQuote.high52w) / spxQuote.high52w) * 100
+      : null;
+
+  const maTrendScore =
+    spxQuote?.maTrend === "above_both" ? 75
+    : spxQuote?.maTrend === "between"  ? 50
+    : spxQuote?.maTrend === "below_both" ? 25
+    : null;
+
+  // 1d-RS SPX vs. RSP (Breadth-Proxy für Tagesmomentum)
+  const rsDay =
+    spy?.change1dPct != null && rsp?.change1dPct != null
+      ? spy.change1dPct - rsp.change1dPct
+      : null;
+
+  const momentumScore = clamp(
+    (maTrendScore ?? 50) +
+    (rsDay != null ? (rsDay > 0 ? 5 : rsDay < 0 ? -5 : 0) : 0)
+  );
+
+  const momentum: MomentumComposite = {
+    price: {
+      rs3m: null,     // benötigt historische Daten (FMP/Yahoo Chart-API)
+      rs6m: null,
+      rs12m1m: null,
+      riskAdjusted: null,
+      trend: spxQuote?.maTrend ?? "data_unavailable",
+      near52wHigh,
+    },
+    earnings: {
+      revisionBreadth: null,  // benötigt FMP Financial Estimates
+      revisionMagnitude: null,
+      sue: null,
+      peadDrift: null,
+    },
+    breadth: {
+      participation: breadth,
+    },
+    score: momentumScore,
+  };
+
   return {
     asOf,
     posture: postureFromScore(score),
@@ -417,7 +474,7 @@ export function computeMarketHealth(input: MarketHealthInput): MarketHealth {
       cyclicalVsDefensive,
       cape: null, // populated by KI if available
     },
-    momentum: null, // populated by caller if available
+    momentum,
     quotes,
     divergences,
     summary: null, // populated by /api/market/analyze

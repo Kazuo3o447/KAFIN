@@ -6,6 +6,7 @@
 
 import React from "react";
 import type { Report } from "@/lib/schemas/report";
+import type { KeyMetrics } from "@/lib/schemas/report";
 
 type FairValue = NonNullable<Report["fair_value"]>;
 
@@ -33,17 +34,31 @@ const CONFIDENCE_STYLE: Record<string, string> = {
 
 interface Props {
   fairValue: FairValue | null;
+  keyMetrics?: Partial<KeyMetrics>;
+  reverseDcf?: Report["reverse_dcf"];
   isPrint?: boolean;
 }
 
-export function FairValuePanel({ fairValue, isPrint }: Props) {
+function fmtNum(v: number | null | undefined, d = 2): string {
+  if (v == null || !Number.isFinite(v)) return "n/a";
+  return v.toFixed(d);
+}
+
+function fmtPct(v: number | null | undefined, d = 1): string {
+  if (v == null || !Number.isFinite(v)) return "n/a";
+  return `${(v * 100).toFixed(d)}%`;
+}
+
+export function FairValuePanel({ fairValue, keyMetrics, reverseDcf, isPrint }: Props) {
+  const km = keyMetrics;
+
   if (!fairValue || fairValue.point_estimate === null) {
     return (
       <div className="glass-card p-4 h-full flex items-center justify-center">
         <p className="text-sm text-secondary-500 text-center">
-          Fair Value nicht modellierbar
+          Fair Value nicht modellierbar — Grund: zu wenig Peer-Daten oder Input-Reihen fehlen.
           <br />
-          <span className="text-xs">(zu wenig Peer-Daten)</span>
+          <span className="text-xs">Fallback: Multiples-only / PEG-Leiter anzeigen.</span>
         </p>
       </div>
     );
@@ -91,6 +106,20 @@ export function FairValuePanel({ fairValue, isPrint }: Props) {
       return "Fwd P/E";
     })
     .join(", ");
+
+  const pegFallbackText = (() => {
+    const level = km?.peg_fallback_level;
+    if (level === 1) return `PEG forward ${fmtNum(km?.peg)}`;
+    if (level === 2) return `EV/EBIT-to-Growth ${fmtNum(km?.ev_ebit_to_growth)}`;
+    if (level === 2.5) return `FCF-PEG ${fmtNum(km?.fcf_peg)}`;
+    if (level === 3) return `EV/GP ${fmtNum(km?.ev_gross_profit)}`;
+    if (level === 4) return `EV/Sales-to-Growth ${fmtNum(km?.ev_sales_to_growth)}`;
+    if (km?.fcf_peg != null) return `PEG n/a → FCF-PEG ${fmtNum(km.fcf_peg)}`;
+    return "PEG n/a — kein positiver Gewinn/Wachstum oder keine Estimates";
+  })();
+
+  const reverseImplied = reverseDcf?.implied_growth_rate ?? fairValue.reverse_dcf?.implied_fcf_cagr ?? null;
+  const asymmetry = km?.reverse_dcf_asymmetry ?? null;
 
   const priceStr = (v: number) =>
     v >= 1000
@@ -175,6 +204,26 @@ export function FairValuePanel({ fairValue, isPrint }: Props) {
         {applicableNames ? ` · ${applicableNames}` : ""}
       </div>
 
+      {/* Multiples / Ladder bridge */}
+      <div className="grid grid-cols-2 gap-2 border-t border-secondary-800 pt-2 text-[11px]">
+        <div className="space-y-0.5 text-secondary-300">
+          <div>EV/Sales: {fmtNum(km?.ev_sales)}</div>
+          <div>EV/GP: {fmtNum(km?.ev_gross_profit)}</div>
+          <div>EV/EBIT: {fmtNum(km?.ev_ebit)}</div>
+          <div>NTM P/E: {fmtNum(km?.ntm_pe)}</div>
+        </div>
+        <div className="space-y-0.5 text-secondary-300">
+          <div>PEG: {fmtNum(km?.peg)}</div>
+          <div>FCF-PEG: {fmtNum(km?.fcf_peg)}</div>
+          <div>EV/FCF: {fmtNum(km?.ev_fcf)}</div>
+          <div>FCF Yield: {fmtPct(km?.fcf_margin)}</div>
+        </div>
+      </div>
+
+      <div className="text-[11px] text-secondary-400 border-t border-secondary-800 pt-2">
+        PEG-Leiter: {pegFallbackText}
+      </div>
+
       {/* Rationale */}
       {!isPrint && rationale_short && (
         <div className="text-[10px] text-secondary-600 leading-tight border-t border-secondary-800 pt-2">
@@ -183,12 +232,23 @@ export function FairValuePanel({ fairValue, isPrint }: Props) {
       )}
 
       {/* Reverse-DCF annotation */}
-      {fairValue.reverse_dcf?.classification && (
+      {(fairValue.reverse_dcf?.classification || reverseDcf?.classification || asymmetry !== null) && (
         <div className="text-[11px] text-secondary-500 border-t border-secondary-800 pt-2">
-          Reverse-DCF: {fairValue.reverse_dcf.implied_fcf_cagr !== null
-            ? `${(fairValue.reverse_dcf.implied_fcf_cagr * 100).toFixed(0)} % FCF-CAGR impliziert`
+          Reverse-DCF: {reverseImplied !== null
+            ? `${(reverseImplied * 100).toFixed(1)} % impliziertes Wachstum`
             : "—"}{" "}
-          ({fairValue.reverse_dcf.classification})
+          ({reverseDcf?.classification ?? fairValue.reverse_dcf?.classification ?? "unknown"})
+          {asymmetry !== null && (
+            <span className={asymmetry >= 0 ? "text-emerald-300" : "text-rose-300"}>
+              {" "}· GARP-Asymmetrie {asymmetry >= 0 ? "+" : ""}{(asymmetry * 100).toFixed(1)}pp
+            </span>
+          )}
+        </div>
+      )}
+
+      {(km?.wacc !== null || fairValue.reverse_dcf?.terminal_growth !== null) && (
+        <div className="text-[11px] text-secondary-500">
+          WACC {fmtPct(km?.wacc)} · Terminal Growth {fmtPct(fairValue.reverse_dcf?.terminal_growth)}
         </div>
       )}
     </div>

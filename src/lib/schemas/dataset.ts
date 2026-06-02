@@ -103,6 +103,7 @@ export const EstimatesSchema = z.object({
   epsFwd: z.array(EstimatesSeriesItemSchema).default([]),
   revenueCagr3yFwd: NumberOrNull,
   ebitCagr3yFwd: NumberOrNull,
+  fcfCagr3yFwd: NumberOrNull,        // GARP: Konsens FCF CAGR 3y fwd (Primary für Forward-FCF-Kaskade)
   guidanceTrend: z.enum(["raised", "maintained", "lowered"]).nullable().default(null),
   provenance: z.array(ProvenanceSchema).default([]),
 });

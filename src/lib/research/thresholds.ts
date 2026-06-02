@@ -186,6 +186,28 @@ export const THRESHOLDS = {
   lens_quality_min_score_green: 70,
   lens_emerging_min_score_green: 68,
 
+  // GARP-Linse: Thresholds für glatte Scoring-Kennlinien
+  lens_garp_weight_growth_market: 14,
+  lens_garp_weight_unit_economics_margins: 20,
+  lens_garp_weight_quality_moat: 16,
+  lens_garp_weight_valuation: 25,
+  lens_garp_weight_capital_discipline_dilution: 10,
+  lens_garp_weight_catalysts_revisions_sentiment: 8,
+  lens_garp_weight_ownership_smart_money: 0,
+  lens_garp_weight_risk_fragility: 7,
+  lens_garp_min_score_green: 60,
+
+  // GARP: Quality-Gate-Schwellen
+  garp_quality_altman_min: 2.99,         // Altman Z > 2.99 = finanzstabil
+  // GARP: Reverse-DCF-Asymmetrie (Phase-2, Block-1 40% Gewicht)
+  garp_asymmetry_full_pts: 0.08,         // +8pp Delta → volles Block-Score
+  // GARP: FCF-PEG (Phase-2, Block-2 30%)
+  garp_fcf_peg_full: 1.0,               // ≤1.0 → voller Score
+  garp_fcf_peg_zero: 2.0,               // ≥2.0 → Score 0
+  // GARP: Capex/OCF (Phase-2, Block-4 15%)
+  garp_capex_ocf_full: 0.05,            // ≤5% → voller Score (asset-light)
+  garp_capex_ocf_zero: 0.50,            // ≥50% → Score 0 (kapitalintensiv)
+
   aaqs_revenue_cagr10y_min: 0.05,
   aaqs_revenue_cagr3y_fwd_min: 0.05,
   aaqs_ebit_cagr10y_min: 0.05,

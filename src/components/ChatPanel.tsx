@@ -10,15 +10,48 @@ interface Message {
 interface ChatPanelProps {
   reportId: string;
   ticker: string;
+  initialFocusMetric?: string | null;
 }
 
-export function ChatPanel({ reportId, ticker }: ChatPanelProps) {
+export function ChatPanel({ reportId, ticker, initialFocusMetric = null }: ChatPanelProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
+  const [focusMetric, setFocusMetric] = useState<string | null>(initialFocusMetric);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [chatAvailable, setChatAvailable] = useState<boolean>(true);
+  const [availabilityChecked, setAvailabilityChecked] = useState<boolean>(false);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        // GET ist absichtlich: 404 => Route fehlt; 405/400 => Route vorhanden.
+        const res = await fetch(`/api/reports/${reportId}/chat`, { method: "GET" });
+        if (!active) return;
+        if (res.status === 404) {
+          setChatAvailable(false);
+        } else {
+          setChatAvailable(true);
+        }
+      } catch {
+        if (!active) return;
+        setChatAvailable(false);
+      } finally {
+        if (active) setAvailabilityChecked(true);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [reportId]);
+
+  useEffect(() => {
+    setFocusMetric(initialFocusMetric ?? null);
+  }, [initialFocusMetric]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -26,7 +59,7 @@ export function ChatPanel({ reportId, ticker }: ChatPanelProps) {
 
   async function send() {
     const text = input.trim();
-    if (!text || streaming) return;
+    if (!text || streaming || !chatAvailable) return;
     setInput("");
     setError(null);
 
@@ -44,7 +77,7 @@ export function ChatPanel({ reportId, ticker }: ChatPanelProps) {
       const res = await fetch(`/api/reports/${reportId}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: nextMessages }),
+        body: JSON.stringify({ messages: nextMessages, focusMetric }),
         signal: abortRef.current.signal,
       });
 
@@ -107,7 +140,7 @@ export function ChatPanel({ reportId, ticker }: ChatPanelProps) {
   }
 
   return (
-    <div className="flex flex-col border border-secondary-800 bg-secondary-950/40 p-2" style={{ minHeight: 280 }}>
+    <div id="chat-panel" className="flex flex-col border border-secondary-800 bg-secondary-950/40 p-2" style={{ minHeight: 280 }}>
       <div className="mb-1 flex items-center justify-between">
         <div className="uppercase tracking-wide text-secondary-400 text-[11px]">
           KI-Chat · {ticker}
@@ -121,6 +154,27 @@ export function ChatPanel({ reportId, ticker }: ChatPanelProps) {
           </button>
         )}
       </div>
+
+      {focusMetric && (
+        <div className="mb-1 flex items-center gap-2 text-[11px]">
+          <span className="text-secondary-400">Fokus:</span>
+          <span className="border border-accent-700/50 bg-accent-900/20 px-1.5 py-0.5 text-accent-300">{focusMetric}</span>
+          <button
+            type="button"
+            onClick={() => setFocusMetric(null)}
+            className="text-secondary-500 hover:text-secondary-300"
+            title="Fokus entfernen"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {!chatAvailable && availabilityChecked && (
+        <div className="mb-2 border border-amber-700/50 bg-amber-950/20 px-2 py-1 text-[11px] text-amber-200">
+          Chat deaktiviert: Backend aktuell nicht verfügbar. Der Report bleibt vollständig nutzbar.
+        </div>
+      )}
 
       {/* Message history */}
       <div className="flex-1 overflow-auto space-y-1 mb-1 max-h-[320px]">
@@ -157,14 +211,14 @@ export function ChatPanel({ reportId, ticker }: ChatPanelProps) {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKey}
-          disabled={streaming}
+          disabled={streaming || !chatAvailable}
           placeholder="Frage eingeben… (Enter = senden)"
           rows={2}
           className="flex-1 resize-none bg-secondary-900 border border-secondary-700 text-secondary-100 text-[12px] px-2 py-1 font-mono placeholder-secondary-600 focus:outline-none focus:border-accent-600 disabled:opacity-50"
         />
         <button
           onClick={() => void send()}
-          disabled={streaming || !input.trim()}
+          disabled={streaming || !input.trim() || !chatAvailable}
           className="border border-secondary-700 bg-secondary-800 px-2 text-[11px] text-secondary-300 hover:bg-secondary-700 disabled:opacity-40"
         >
           {streaming ? "…" : "▶"}

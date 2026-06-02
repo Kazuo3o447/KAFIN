@@ -172,12 +172,18 @@ export function diffReports(a: DiffInput, b: DiffInput): ReportDiff {
   });
 
   const kmKeys = Object.keys(a.report.key_metrics) as (keyof typeof a.report.key_metrics)[];
-  const keyMetrics: NumberDelta[] = kmKeys.map((k) => {
-    const before = a.report.key_metrics[k];
-    const after = b.report.key_metrics[k];
-    const { delta, pctDelta } = diffNumber(before, after);
-    return { key: String(k), before: before ?? null, after: after ?? null, delta, pctDelta };
-  });
+  const keyMetrics: NumberDelta[] = kmKeys
+    .filter((k) => {
+      // Nicht-numerische Felder (enum-strings) aus dem Diff ausschließen
+      const val = a.report.key_metrics[k] ?? b.report.key_metrics[k];
+      return val === null || typeof val === "number";
+    })
+    .map((k) => {
+      const before = a.report.key_metrics[k] as number | null;
+      const after = b.report.key_metrics[k] as number | null;
+      const { delta, pctDelta } = diffNumber(before, after);
+      return { key: String(k), before: before ?? null, after: after ?? null, delta, pctDelta };
+    });
 
   return {
     meta: {

@@ -16,6 +16,7 @@ interface Props {
   lines: LogLine[];
   follow?: boolean;
   height?: number;
+  className?: string;
 }
 
 function formatTs(ts: number) {
@@ -23,7 +24,7 @@ function formatTs(ts: number) {
   return d.toLocaleTimeString("de-DE", { hour12: false });
 }
 
-export function LogPanel({ lines, follow = true, height = 360 }: Props) {
+export function LogPanel({ lines, follow = true, height, className }: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -32,7 +33,11 @@ export function LogPanel({ lines, follow = true, height = 360 }: Props) {
   }, [lines, follow]);
 
   return (
-    <div className="log-panel" style={{ maxHeight: height }} ref={ref}>
+    <div
+      className={className ?? "log-panel"}
+      style={!className ? { maxHeight: height ?? 360 } : undefined}
+      ref={ref}
+    >
       {lines.length === 0 ? (
         <div className="text-secondary-600">— noch keine Log-Einträge —</div>
       ) : (

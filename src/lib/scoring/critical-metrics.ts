@@ -18,6 +18,14 @@ const CRITICAL_BY_LENS: Record<Lens, Array<keyof KeyMetrics>> = {
     "fcf_margin",
     "ev_sales",
   ],
+  quality_garp: [
+    "roic",
+    "altman_z",
+    "fcf_margin",
+    "ev_fcf",
+    "reverse_dcf_asymmetry",
+    "fcf_peg",
+  ],
 };
 
 export function getCriticalMetricsForLens(lens: Lens): Array<keyof KeyMetrics> {

@@ -27,6 +27,25 @@ Der zentrale Grundsatz lautet:
 
 > Research findet interessante Unternehmen. Trading prueft, ob daraus unter aktuellen Marktbedingungen ueberhaupt ein handelbarer Paper-Trade wird.
 
+### 1.1 Dashboard-Rendering-Prinzip (UI v2)
+
+Fuer die Report-Darstellung gilt zusaetzlich ein verbindliches Rendering-Prinzip:
+
+- Sehen -> Lesen -> Vertiefen (visuelle Zusammenfassung vor Detailtabellen).
+- Farbe niemals allein: Farbcodierung immer mit Symbol/Vorzeichen/Hinweis.
+- Fehlende Werte sind normal: kein Sentinel/Minus als Endzustand, stattdessen `n/a` + kurzer Grund.
+- Fallbacks sind sichtbar: genutzte Ersatzlogik (z. B. PEG-Leiter) muss im UI nachvollziehbar bleiben.
+- Confidence steuert Darstellung: niedrige Provenance daempft Ton/Farbe und markiert Vorbehalte.
+
+### 1.2 Quality-GARP Erweiterung
+
+Das Researchmodul fuehrt zusaetzlich die Linse `quality_garp` mit folgenden Leitideen:
+
+- Reverse-DCF-Asymmetrie als Erwartungs-Delta (`forward_fcf_cagr - implied_growth_rate`).
+- FCF-basierte Bewertung (`ev_fcf`, `fcf_peg`) als PEG-Fallback fuer positive FCF bei unklarer Earnings-Basis.
+- Forward-FCF-CAGR-Kaskade (Konsens -> historisch gekappt -> Sektor-Median) mit Quellkennzeichnung.
+- Gatekeeper linsen-intern (kein globales Score-0), bei Nicht-Fit kontrollierte Reroute in `emerging_winner`.
+
 ---
 
 ## 2. Rolle des Researchmoduls innerhalb der Plattform

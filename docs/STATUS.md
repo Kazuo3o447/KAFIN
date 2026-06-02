@@ -6,6 +6,51 @@
 
 ## Aktueller Stand — 2026-06-02 (Update 25)
 
+## Aktueller Stand — 2026-06-02 (Update 27)
+
+**Phase:** Konsolidierung abgeschlossen (Quality-GARP + Report-Dashboard v2 + Doku-Sync).
+
+### Umgesetzt
+
+- Quality-GARP-Linse vollständig integriert (Schema, Thresholds, Lens-Profil, Gatekeeper, Engine-Reroute, Orchestrator-Lens-Record).
+- Core-Metriken für GARP eingeführt: `ev_fcf`, `fcf_peg`, `forward_fcf_cagr`, `forward_fcf_cagr_source`, `capex_ocf_ratio`, `reverse_dcf_asymmetry`.
+- Report-Seite auf Rescue-Brief v2 umgestellt (Markt-Header, Hero, Radar, farbcodierte Blocks, kanonische FV-Brücke, Deep-Dive, Chat-Fokus).
+- Fallback-/Robustheitsregeln im UI aktiv: `n/a` statt Sentinel, Dünndaten-Hinweise, Confidence-Dämpfung, Teilfehler-Banner.
+- Unit-Tests an v2-Semantik angepasst (`missing-data-inline`, `terminal-density`).
+
+### Verifiziert
+
+- `npx tsc --noEmit --noUnusedLocals --noUnusedParameters` ✅
+- `npx vitest run` ✅ (67/67 Dateien, 206/206 Tests)
+
+---
+
+## Aktueller Stand — 2026-06-02 (Update 25)
+
+## Aktueller Stand — 2026-06-02 (Update 26)
+
+**Phase:** Report-Dashboard v2 (Rescue Brief) umgesetzt.
+
+### Umgesetzt
+
+- **Neuer Report-IA-Flow** in `src/app/reports/[id]/page.tsx`: Markt-Header -> Hero -> Radar -> 3 Kennzahlenblöcke -> Fair-Value-Brücke -> Deep-Dive -> KI-Chat.
+- **Scorecard-Radar (neu):** `src/components/ReportScorecardRadar.tsx` mit Fallback auf `score_heatmap`, Speichen-Hinweis bei dünner Datenlage und Safety-/Confidence-Chips.
+- **Farbcodierte Kennzahlenblöcke:** Wachstum/Finanzen/Momentum mit Tooltip-Context, Symbolik (↑/↓/→), Confidence-Dämpfung und Chat-Fokus-Links (`focusMetric`).
+- **Kanonische Fair-Value-Brücke erweitert:** `src/components/FairValuePanel.tsx` zeigt jetzt PEG-Leiter, EV/FCF, FCF-PEG, Reverse-DCF und `reverse_dcf_asymmetry`.
+- **Deep-Dive-Akkordeons:** Moat/KI, Forensik/Red Flags, Red-Team, Verlauf, Quellen; fehlende Datensätze werden explizit als Provider-Lücke ausgewiesen.
+- **Chat-Fallback verbessert:** `src/components/ChatPanel.tsx` prüft Endpoint-Verfügbarkeit, deaktiviert sauber bei fehlendem Backend und unterstützt `initialFocusMetric`.
+- **Null-Jahre-/Leerserien-Filter:** Jahreschart-Reihen werden dedupliziert und unbefüllte Jahre entfernt, statt Artefaktlinien zu rendern.
+
+### Tests/Validierung
+
+- `npx tsc --noEmit --noUnusedLocals --noUnusedParameters` ✅
+- `npx vitest run` ✅ (67/67 Dateien, 206/206 Tests)
+- Tests `missing-data-inline` und `terminal-density` auf v2-Semantik aktualisiert.
+
+---
+
+## Aktueller Stand — 2026-06-02 (Update 25)
+
 **Phase:** Markets-Seite & Markt-Gesundheit (vollständig umgesetzt).
 
 ### Umgesetzt

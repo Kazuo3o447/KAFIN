@@ -332,6 +332,7 @@ function parseEstimates(result: ProviderFetchResultV2 | null, runDate: string): 
       epsFwd: [],
       revenueCagr3yFwd: null,
       ebitCagr3yFwd: null,
+      fcfCagr3yFwd: null,
       guidanceTrend: null,
       provenance,
     };
@@ -354,6 +355,7 @@ function parseEstimates(result: ProviderFetchResultV2 | null, runDate: string): 
     epsFwd: eps.filter((x) => Number.isFinite(x.year)).sort((a, b) => a.year - b.year),
     revenueCagr3yFwd: toNum(d.revenueCagr3yFwd),
     ebitCagr3yFwd: toNum(d.ebitCagr3yFwd),
+    fcfCagr3yFwd: toNum(d.fcfCagr3yFwd),
     guidanceTrend:
       d.guidanceTrend === "raised" || d.guidanceTrend === "maintained" || d.guidanceTrend === "lowered"
         ? d.guidanceTrend

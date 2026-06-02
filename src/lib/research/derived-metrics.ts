@@ -68,12 +68,24 @@ export interface DerivedMetrics {
   evEbitToGrowth: number | null;
   /** PEG Fallback Level 4: PSG = EV/Sales ÷ Rev-CAGR-fwd */
   evSalesToGrowth: number | null;
-  /** Welche PEG-Leiter-Stufe verwendet wurde (1–4); null wenn keine anwendbar */
-  pegFallbackLevel: 1 | 2 | 3 | 4 | null;
+  /** Welche PEG-Leiter-Stufe verwendet wurde (1, 2, 2.5, 3, 4); null wenn keine anwendbar */
+  pegFallbackLevel: 1 | 2 | 2.5 | 3 | 4 | null;
   pfcf: number | null;
   fcfYield: number | null;
   dividendYield: number | null;
   evEbit: number | null;
+  /** GARP: EV / FCF TTM */
+  evFcf: number | null;
+  /** GARP: FCF-PEG = (EV/FCF) / (fwd_fcf_growth × 100) */
+  fcfPeg: number | null;
+  /** GARP: Forward FCF CAGR (Konsens → hist. gekappt → Sektor-Median) */
+  forwardFcfCagr: number | null;
+  /** GARP: Quelle der Forward-FCF-CAGR-Schätzung */
+  forwardFcfCagrSource: "consensus" | "historical_capped" | "sector_median" | null;
+  /** GARP: |capex| / operating_cash_flow (Skalierbarkeit) */
+  capexOcfRatio: number | null;
+  /** GARP: forward_fcf_cagr − implied_growth_rate (Asymmetrie-Edge) */
+  reverseDcfAsymmetry: number | null;
   valuationZ: {
     evSales: number | null;
     evGrossProfit: number | null;
@@ -92,7 +104,11 @@ export interface DerivedMetrics {
   daysToCover: number | null;
 }
 
-type MetricKey = keyof KeyMetrics;
+/** Nur numerische (number | null) Felder von KeyMetrics — für die deterministische add()-Funktion */
+type NumericKeyMetricKey = {
+  [K in keyof KeyMetrics]: KeyMetrics[K] extends number | null ? K : never;
+}[keyof KeyMetrics];
+type MetricKey = NumericKeyMetricKey;
 
 const DERIVED_KEYS: MetricKey[] = [
   "revenue_growth_yoy",
@@ -129,6 +145,13 @@ const DERIVED_KEYS: MetricKey[] = [
   "ev_ebit_to_growth",
   "ev_sales_to_growth",
   "peg_fallback_level",
+  // GARP Core-Upgrades
+  "ev_fcf",
+  "fcf_peg",
+  "forward_fcf_cagr",
+  // forward_fcf_cagr_source ist string-Feld, kein numerisches — nicht in DERIVED_KEYS
+  "capex_ocf_ratio",
+  "reverse_dcf_asymmetry",
   // Short Interest
   "short_interest_pct_float",
   "days_to_cover",
@@ -554,7 +577,7 @@ export function deriveKeyMetrics(ticker: string, runDate: string, facts: Provide
 }
 
 export function mergeDeterministicMetrics(base: KeyMetrics, deterministic: Partial<KeyMetrics> | undefined): KeyMetrics {
-  const merged: Record<string, number | null> = { ...base };
+  const merged: Record<string, unknown> = { ...base };
   if (deterministic) {
     for (const key of DERIVED_KEYS) {
       const value = deterministic[key];
@@ -799,6 +822,58 @@ export function deriveMetricsFromDataset(
   const revenueCagr3yFwd = est.revenueCagr3yFwd;
   const ebitCagr3yFwd = est.ebitCagr3yFwd;
 
+  // -----------------------------------------------------------------------
+  // GARP: Forward-FCF-CAGR Fallback-Kaskade
+  // Primary: Konsens (FMP/Finnhub estimates), Fallback 1: hist. 3y CAGR gekappt 15%,
+  // Fallback 2: Sektor-Median 8% (generischer Fallback).
+  // -----------------------------------------------------------------------
+  const SECTOR_MEDIAN_FCF_GROWTH = 0.08; // Fallback 2
+  const FCF_HIST_CAGR_CAP = 0.15; // Fortschreibungs-Cap Fallback 1
+  let forwardFcfCagr: number | null = null;
+  let forwardFcfCagrSource: "consensus" | "historical_capped" | "sector_median" | null = null;
+
+  // Stufe 1: Konsens-Schätzung
+  if (est.fcfCagr3yFwd != null && est.fcfCagr3yFwd > 0) {
+    forwardFcfCagr = est.fcfCagr3yFwd;
+    forwardFcfCagrSource = "consensus";
+  }
+  // Stufe 2: historische FCF-CAGR, gekappt
+  if (forwardFcfCagr === null) {
+    const histFcfCagr = cagr(fcfA, 3);
+    if (histFcfCagr !== null && histFcfCagr > 0) {
+      forwardFcfCagr = Math.min(histFcfCagr, FCF_HIST_CAGR_CAP);
+      forwardFcfCagrSource = "historical_capped";
+    }
+  }
+  // Stufe 3: Sektor-Median
+  if (forwardFcfCagr === null) {
+    forwardFcfCagr = SECTOR_MEDIAN_FCF_GROWTH;
+    forwardFcfCagrSource = "sector_median";
+  }
+
+  // GARP: EV/FCF und FCF-PEG
+  const evFcf = enterpriseValue !== null && fcf !== null && fcf > 0 ? enterpriseValue / fcf : null;
+  const fcfPeg =
+    evFcf !== null && forwardFcfCagr !== null && forwardFcfCagr > 0
+      ? evFcf / (forwardFcfCagr * 100)
+      : null;
+
+  // GARP: |capex| / OCF (Skalierbarkeit; nur wenn OCF > 0)
+  const capexOcfRatio =
+    capex !== null && operatingCashflow !== null && operatingCashflow > 0
+      ? Math.abs(capex) / operatingCashflow
+      : null;
+
+  // GARP: Reverse-DCF-Asymmetrie = forward_fcf_cagr - implied_growth_rate
+  const reverseDcfImplied = computeReverseDCF(enterpriseValue, fcf, wacc);
+  const reverseDcfAsymmetry =
+    forwardFcfCagr !== null &&
+    reverseDcfImplied.impliedGrowthRate !== null &&
+    reverseDcfImplied.impliedGrowthRate > -0.5 && // Plausibilitäts-Check
+    reverseDcfImplied.impliedGrowthRate < 2.0      // Plausibilitäts-Check (kein 200%-Artefakt)
+      ? forwardFcfCagr - reverseDcfImplied.impliedGrowthRate
+      : null;
+
   const beatSeries = dataset.earningsHistory
     .slice(-8)
     .map((e) => (typeof e.surprisePct === "number" ? e.surprisePct : null));
@@ -867,16 +942,24 @@ export function deriveMetricsFromDataset(
       if (pe !== null && revenueCagr3yFwd !== null && revenueCagr3yFwd > 0) return 1;
       // Level 2: EV/EBIT-to-Growth (requires positive EBIT + fwd growth)
       if (evEbit !== null && ebitCagr3yFwd !== null && ebitCagr3yFwd > 0) return 2;
+      // Level 2.5: FCF-PEG (positive FCF + fwd FCF growth, aber kein positiver Gewinn/EBIT)
+      if (fcfPeg !== null && forwardFcfCagr !== null && forwardFcfCagr > 0) return 2.5;
       // Level 3: EV/GP alone (positive gross profit)
       if (evGrossProfit !== null) return 3;
       // Level 4: PSG (EV/Sales, always last resort)
       if (evSales !== null && revenueCagr3yFwd !== null && revenueCagr3yFwd > 0) return 4;
       return null;
-    })() as 1 | 2 | 3 | 4 | null,
+    })() as 1 | 2 | 2.5 | 3 | 4 | null,
     pfcf,
     fcfYield,
     dividendYield,
     evEbit,
+    evFcf,
+    fcfPeg,
+    forwardFcfCagr,
+    forwardFcfCagrSource,
+    capexOcfRatio,
+    reverseDcfAsymmetry,
     valuationZ: {
       evSales: valuationZ(evSales, evSalesHist),
       evGrossProfit: valuationZ(evGrossProfit, evSalesHist),

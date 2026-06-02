@@ -1,7 +1,7 @@
 import type { BlockKey } from "@/lib/scoring/weights";
 import { THRESHOLDS } from "@/lib/research/thresholds";
 
-export type Lens = "quality_compounder" | "emerging_winner";
+export type Lens = "quality_compounder" | "emerging_winner" | "quality_garp";
 
 export interface GateRules {
   minScoreGreen: number;
@@ -77,6 +77,37 @@ export const LENS_PROFILES: Record<Lens, LensProfile> = {
     gates: {
       minScoreGreen: THRESHOLDS.lens_emerging_min_score_green,
       requireStableProfitability: false,
+    },
+  },
+  quality_garp: {
+    blockWeights: {
+      growth_market: THRESHOLDS.lens_garp_weight_growth_market,
+      unit_economics_margins: THRESHOLDS.lens_garp_weight_unit_economics_margins,
+      quality_moat: THRESHOLDS.lens_garp_weight_quality_moat,
+      valuation: THRESHOLDS.lens_garp_weight_valuation,
+      capital_discipline_dilution: THRESHOLDS.lens_garp_weight_capital_discipline_dilution,
+      catalysts_revisions_sentiment: THRESHOLDS.lens_garp_weight_catalysts_revisions_sentiment,
+      ownership_smart_money: THRESHOLDS.lens_garp_weight_ownership_smart_money,
+      risk_fragility: THRESHOLDS.lens_garp_weight_risk_fragility,
+    },
+    indicatorSet: [
+      "revenue_growth_quality",
+      "revenue_cagr_3y",
+      "gross_margin_quality",
+      "fcf_efficiency",
+      "moat_returns_composite",
+      "growth_adjusted_multiple",
+      "garp_reverse_dcf_asymmetry",
+      "garp_fcf_peg",
+      "garp_capex_ocf",
+      "garp_margin_momentum",
+      "share_count_dilution",
+      "financial_fragility",
+    ],
+    valuationPreference: ["mature", "cyclical", "pre_profit"],
+    gates: {
+      minScoreGreen: THRESHOLDS.lens_garp_min_score_green,
+      requireStableProfitability: true,
     },
   },
 };

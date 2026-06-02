@@ -13,7 +13,6 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { LogPanel, type LogLine } from "@/components/LogPanel";
 import { RunStepper, type StepState } from "@/components/RunStepper";
-import { RunFindingsPanel, type RunMeta } from "@/components/RunFindingsPanel";
 
 interface DoneEvent {
   reportId: string;
@@ -58,16 +57,12 @@ export default function RunPage() {
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [finished, setFinished] = useState<DoneEvent | null>(null);
-  const [showLog, setShowLog] = useState(false);
+
   const [running, setRunning] = useState(true);
 
   // Step stepper state
   const [stepStates, setStepStates] = useState<Map<string, StepState>>(new Map());
   const [latestLog, setLatestLog] = useState<string>("");
-
-  // Findings panel state
-  const [meta, setMeta] = useState<RunMeta | null>(null);
-  const [stepSummaries, setStepSummaries] = useState<Map<string, string>>(new Map());
 
   const esRef = useRef<EventSource | null>(null);
 
@@ -141,21 +136,7 @@ export default function RunPage() {
           ms: d.ms,
           summary: d.summary,
         });
-        if (d.summary) {
-          setStepSummaries((prev) => {
-            const next = new Map(prev);
-            next.set(d.step, d.summary!);
-            return next;
-          });
-        }
         appendLog(d.ok ? "info" : "warn", `${d.ok ? "✓" : "△"} ${d.step} (${d.ms}ms)${d.summary ? ` — ${d.summary}` : ""}`);
-      } catch { /* ignore */ }
-    });
-
-    es.addEventListener("meta", (e: MessageEvent) => {
-      try {
-        const d = JSON.parse(e.data as string) as RunMeta;
-        setMeta((prev) => ({ ...prev, ...d }));
       } catch { /* ignore */ }
     });
 
@@ -200,7 +181,7 @@ export default function RunPage() {
       : "text-amber-400";
 
   return (
-    <main className="min-h-screen bg-secondary-950 text-secondary-100 flex flex-col">
+    <main className="h-screen bg-secondary-950 text-secondary-100 flex flex-col overflow-hidden">
       {/* ── Kopfzeile ───────────────────────────────────────────────── */}
       <header className="shrink-0 border-b border-secondary-800 px-6 py-4 flex items-center justify-between gap-4">
         <div className="flex items-center gap-3 min-w-0">
@@ -240,7 +221,7 @@ export default function RunPage() {
       </header>
 
       {/* ── Haupt-Content ───────────────────────────────────────────── */}
-      <div className="flex-1 overflow-auto px-4 py-6">
+      <div className="flex-1 flex flex-col overflow-hidden px-4 py-6 min-h-0">
         {/* Error banner */}
         {error && (
           <div
@@ -282,11 +263,11 @@ export default function RunPage() {
           </div>
         )}
 
-        {/* 2-Column grid: Stepper + Findings */}
-        <div className="grid grid-cols-1 xl:grid-cols-[1fr_280px] gap-5 max-w-5xl mx-auto">
+        {/* 2-Column grid: Stepper + Log */}
+        <div className="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-5 max-w-5xl mx-auto w-full">
           {/* Stepper */}
           <div
-            className="rounded-xl border border-secondary-800 bg-secondary-950 py-4"
+            className="rounded-xl border border-secondary-800 bg-secondary-950 py-4 overflow-y-auto"
             aria-label="Pipeline-Schritte"
           >
             <RunStepper
@@ -296,11 +277,11 @@ export default function RunPage() {
             />
           </div>
 
-          {/* Findings panel */}
-          <RunFindingsPanel
-            meta={meta}
-            stepSummaries={stepSummaries}
-          />
+          {/* Live Log */}
+          <div className="rounded-xl border border-secondary-800 bg-secondary-950 p-3 flex flex-col min-h-0">
+            <div className="text-[10px] font-mono text-secondary-500 uppercase tracking-widest px-1 shrink-0">Live Log</div>
+            <LogPanel lines={logs} className="log-panel flex-1 min-h-0 overflow-y-auto" />
+          </div>
         </div>
       </div>
 
@@ -326,25 +307,12 @@ export default function RunPage() {
           />
         </div>
 
-        {/* Log toggle */}
-        <div className="flex items-center justify-between px-4 py-2">
-          <button
-            onClick={() => setShowLog((v) => !v)}
-            className="text-xs text-secondary-500 hover:text-secondary-300 underline decoration-dotted"
-          >
-            {showLog ? "Technisches Log ausblenden" : "Technisches Log einblenden"}
-          </button>
+        {/* Footer info */}
+        <div className="flex items-center justify-end px-4 py-2">
           <span className="text-[10px] font-mono text-secondary-700">
             runId: {runId || "—"}
           </span>
         </div>
-
-        {/* Collapsible log panel */}
-        {showLog && (
-          <div className="border-t border-secondary-800 px-4 pb-4 pt-2">
-            <LogPanel lines={logs} height={220} />
-          </div>
-        )}
       </footer>
     </main>
   );

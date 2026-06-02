@@ -22,6 +22,16 @@ export interface AssetQuote {
   /** true wenn Wert nur als verzögerter Proxy verfügbar ist (z. B. MOVE) */
   isProxy?: boolean;
   currency?: string;
+  /** 52-Wochen-Hoch */
+  high52w?: number | null;
+  /** 52-Wochen-Tief */
+  low52w?: number | null;
+  /** 50-Tage-Durchschnitt */
+  ma50?: number | null;
+  /** 200-Tage-Durchschnitt */
+  ma200?: number | null;
+  /** Trend-Lage: 'above_both' | 'between' | 'below_both' | null */
+  maTrend?: string | null;
 }
 
 // Symbole — Yahoo Finance Ticker
@@ -60,11 +70,26 @@ interface YahooQuoteRaw {
   regularMarketChangePercent?: number;
   currency?: string;
   regularMarketTime?: number;
+  fiftyTwoWeekHigh?: number;
+  fiftyTwoWeekLow?: number;
+  fiftyDayAverage?: number;
+  twoHundredDayAverage?: number;
 }
 
 export async function fetchMarketQuotes(): Promise<AssetQuote[]> {
   const symbols = QUOTE_SYMBOLS.map((s) => s.symbol).join(",");
-  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols)}&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,currency,regularMarketTime`;
+  const fields = [
+    "regularMarketPrice",
+    "regularMarketChange",
+    "regularMarketChangePercent",
+    "currency",
+    "regularMarketTime",
+    "fiftyTwoWeekHigh",
+    "fiftyTwoWeekLow",
+    "fiftyDayAverage",
+    "twoHundredDayAverage",
+  ].join(",");
+  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols)}&fields=${fields}`;
 
   let rawQuotes: YahooQuoteRaw[] = [];
   try {
@@ -92,6 +117,17 @@ export async function fetchMarketQuotes(): Promise<AssetQuote[]> {
 
   return QUOTE_SYMBOLS.map(({ symbol, label, category, isProxy }) => {
     const raw = bySymbol.get(symbol);
+    const price = raw?.regularMarketPrice ?? null;
+    const ma50 = raw?.fiftyDayAverage ?? null;
+    const ma200 = raw?.twoHundredDayAverage ?? null;
+    const maTrend =
+      price != null && ma50 != null && ma200 != null
+        ? price > ma50 && price > ma200
+          ? "above_both"
+          : price < ma50 && price < ma200
+          ? "below_both"
+          : "between"
+        : null;
     if (!raw) {
       return {
         symbol,
@@ -108,7 +144,7 @@ export async function fetchMarketQuotes(): Promise<AssetQuote[]> {
       symbol,
       label,
       category,
-      price: raw.regularMarketPrice ?? null,
+      price,
       change1d: raw.regularMarketChange ?? null,
       change1dPct: raw.regularMarketChangePercent ?? null,
       asOf: raw.regularMarketTime
@@ -116,6 +152,11 @@ export async function fetchMarketQuotes(): Promise<AssetQuote[]> {
         : null,
       isProxy,
       currency: raw.currency,
+      high52w: raw.fiftyTwoWeekHigh ?? null,
+      low52w: raw.fiftyTwoWeekLow ?? null,
+      ma50,
+      ma200,
+      maTrend,
     };
   });
 }

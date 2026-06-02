@@ -9,6 +9,7 @@ import { buildFairValueCorridor, detectValuationRegime, type ValuationRegime } f
 import { deriveMetricsFromDataset, type DerivedMetrics } from "@/lib/research/derived-metrics";
 import { INDICATOR_FUNCTIONS } from "@/lib/scoring/rubric-fn";
 import { LENS_PROFILES, type Lens } from "@/lib/scoring/lenses";
+import { checkQualityGarpGatekeepers } from "@/lib/scoring/quality-garp";
 import { routeSector, type RubricClass } from "@/lib/scoring/sector-router";
 import { summarizeSectorBaseline, type SectorBaselineUsed } from "@/lib/research/sector-baselines";
 import { deriveComboSignals, deriveConfidenceScore, type ComboSignal } from "@/lib/research/combo-signals";
@@ -57,6 +58,10 @@ export interface LensScoreResult {
   safetyGate: SafetyGateResult;
   /** P1: true wenn mind. eine Achse >axis_divergence_review Divergenz hat (in P1 immer false). */
   needsAxisReview: boolean;
+  /** GARP: false wenn quality_garp-Gates nicht bestanden → intern als emerging_winner bewertet */
+  lensFit?: boolean;
+  /** GARP: Gates die nicht bestanden (nur quality_garp-Linse) */
+  garpFailedGates?: string[];
 }
 
 function pickArchetype(
@@ -190,6 +195,25 @@ export function scoreCompany(dataset: CompanyDataset, lens: Lens, marketContext?
   }
 
   const m = deriveMetricsFromDataset(dataset);
+
+  // ---------------------------------------------------------------------------
+  // Quality-GARP Phase-1-Gatekeeper: bei Durchfall Reroute zu emerging_winner
+  // Die Gatekeeper sind linsen-intern: kein Score 0, sondern lens_fit: false.
+  // ---------------------------------------------------------------------------
+  let effectiveLens: Lens = lens;
+  let lensFit: boolean | undefined;
+  let garpFailedGates: string[] | undefined;
+  if (lens === "quality_garp") {
+    // altman_z kommt aus dataset.forensics (nicht in DerivedMetrics)
+    const altmanZ = (dataset as unknown as { forensics?: { altmanZ?: number | null } })
+      .forensics?.altmanZ ?? null;
+    const gatekeeperResult = checkQualityGarpGatekeepers(m, altmanZ);
+    lensFit = gatekeeperResult.passed;
+    if (!gatekeeperResult.passed) {
+      garpFailedGates = gatekeeperResult.failedGates;
+      effectiveLens = "emerging_winner"; // Reroute: intern als emerging_winner bewerten
+    }
+  }
   const estimatesSignals = computeEstimatesSignals(dataset);
   const ownership = computeOwnershipSignals(dataset);
   const inflection = computeInflectionFlags(dataset, estimatesSignals.revisionsBalance, estimatesSignals.sue);
@@ -221,7 +245,7 @@ export function scoreCompany(dataset: CompanyDataset, lens: Lens, marketContext?
     (Object.keys(score.blocks) as BlockKey[]).map((k) => [k, Math.round(score.blocks[k].weighted * 100) / 100]),
   ) as Record<BlockKey, number>;
 
-  const profile = LENS_PROFILES[lens];
+  const profile = LENS_PROFILES[effectiveLens];
   const hardBlockers: string[] = [];
   if (profile.gates.requireStableProfitability && regime === "pre_profit") {
     hardBlockers.push("Unzureichende stabile Profitabilität für Quality-Linse");
@@ -229,7 +253,7 @@ export function scoreCompany(dataset: CompanyDataset, lens: Lens, marketContext?
   if ((m.cashRunwayMonths ?? 999) < THRESHOLDS.cash_runway_hard_blocker_months) {
     hardBlockers.push("Cash Runway unter Hard-Blocker-Schwelle");
   }
-  if (lens === "emerging_winner" && ownership.shortRisk && !ownership.squeezeSetup) {
+  if (effectiveLens === "emerging_winner" && ownership.shortRisk && !ownership.squeezeSetup) {
     hardBlockers.push("Hohes Short-Interesse ohne positives Setup");
   }
 
@@ -282,7 +306,7 @@ export function scoreCompany(dataset: CompanyDataset, lens: Lens, marketContext?
     expectationsGap: fairValue.expectationsGap,
     inflectionFlags: inflection,
     ownershipScore: ownership.ownershipScore,
-    aaqsBinary: lens === "quality_compounder" ? buildAaqs(m) : null,
+    aaqsBinary: lens === "quality_compounder" || lens === "quality_garp" ? buildAaqs(m) : null,
     stabilityScores: {
       grossMargin: m.grossMarginStddev,
       operatingMargin: m.operatingMarginStddev,
@@ -297,5 +321,7 @@ export function scoreCompany(dataset: CompanyDataset, lens: Lens, marketContext?
     axes,
     safetyGate,
     needsAxisReview: needsAxisReview(axes),
+    lensFit,
+    garpFailedGates,
   };
 }

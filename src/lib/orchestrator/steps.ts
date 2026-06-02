@@ -104,7 +104,7 @@ export interface PipelineState {
   regimeResult?: RegimeResult;
   timing?: TimingOutput;
   analyst?: AnalystBlock | null;
-  lensResults?: Record<"quality_compounder" | "emerging_winner", LensScoreResult>;
+  lensResults?: Record<"quality_compounder" | "emerging_winner" | "quality_garp", LensScoreResult>;
   derivedMetrics?: Partial<KeyMetrics>;
   forensicsResult?: {
     piotroski: ReturnType<typeof computePiotroskiF>;
@@ -399,6 +399,13 @@ export async function stepDeriveMetrics(state: PipelineState): Promise<void> {
     if (dm.evSalesToGrowth !== null) patch.ev_sales_to_growth = dm.evSalesToGrowth;
     if (dm.pegFallbackLevel !== null) patch.peg_fallback_level = dm.pegFallbackLevel;
     if (dm.evEbit !== null) patch.ev_ebit = dm.evEbit;
+    // GARP Core-Upgrades
+    if (dm.evFcf !== null) patch.ev_fcf = dm.evFcf;
+    if (dm.fcfPeg !== null) patch.fcf_peg = dm.fcfPeg;
+    if (dm.forwardFcfCagr !== null) patch.forward_fcf_cagr = dm.forwardFcfCagr;
+    if (dm.forwardFcfCagrSource !== null) patch.forward_fcf_cagr_source = dm.forwardFcfCagrSource;
+    if (dm.capexOcfRatio !== null) patch.capex_ocf_ratio = dm.capexOcfRatio;
+    if (dm.reverseDcfAsymmetry !== null) patch.reverse_dcf_asymmetry = dm.reverseDcfAsymmetry;
     if (Object.keys(patch).length > 0) {
       state.derivedMetrics = { ...(state.derivedMetrics ?? {}), ...patch };
     }
@@ -479,9 +486,11 @@ export async function stepAnswerSections(state: PipelineState): Promise<void> {
 
   const quality = scoreCompany(dataset, "quality_compounder", state.marketContext);
   const emerging = scoreCompany(dataset, "emerging_winner", state.marketContext);
+  const garp = scoreCompany(dataset, "quality_garp", state.marketContext);
   state.lensResults = {
     quality_compounder: quality,
     emerging_winner: emerging,
+    quality_garp: garp,
   };
 
   const active = quality;
@@ -1390,7 +1399,7 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
     aaqs_binary: state.lensResults?.quality_compounder?.aaqsBinary ?? null,
     stability_scores: state.lensResults?.quality_compounder?.stabilityScores ?? null,
     lens_results: state.lensResults
-      ? [state.lensResults.quality_compounder, state.lensResults.emerging_winner]
+      ? [state.lensResults.quality_compounder, state.lensResults.emerging_winner, state.lensResults.quality_garp]
       : [],
     technicals: state.technicals ?? null,
     regime: state.regimeResult?.regime ?? null,

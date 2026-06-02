@@ -86,13 +86,13 @@ describe("missing data shown inline", () => {
     });
   });
 
-  it("renders missing values as inline dashes and keeps warning visible", async () => {
+  it("renders missing values as inline n/a and keeps warning visible", async () => {
     const mod = await import("@/app/reports/[id]/page");
     const Page = mod.default;
     const html = renderToStaticMarkup(React.createElement(Page, { params: { id: "r2" } }));
 
     expect(html).toContain("Technikfehler");
     expect(html).toContain("nicht berechenbar");
-    expect(html).toContain("-</span>");
+    expect(html).toContain("n/a");
   });
 });

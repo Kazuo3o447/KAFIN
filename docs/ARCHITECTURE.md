@@ -218,6 +218,50 @@ Report-UI:
 Markets-UI:
 - [../src/app/markets/page.tsx](../src/app/markets/page.tsx) — Marktgesundheits-Dashboard
   - Kopfzeile: Posture-Label + Score/100 + Säulen-Zähler + as-of-Stamp + Refresh
+
+### Report-Dashboard v2 (Rescue Brief)
+
+Die Einzeltitel-Seite [../src/app/reports/[id]/page.tsx](../src/app/reports/[id]/page.tsx) wurde auf eine zonierte IA umgestellt:
+
+1. Markt-Header (Posture as-of, Link auf Markets)
+2. Decision-Hero (Aktion, Setup, MoS, Linse, Conviction)
+3. Scorecard-Radar (Growth/Finance/Moat/Bewertung/Momentum) mit Fallback auf `score_heatmap`
+4. Drei farbcodierte Kennzahlenblöcke (Wachstum/Finanzen/Momentum), klickbar in Chat-Fokus
+5. Kanonische Fair-Value-Brücke über `FairValuePanel` (inkl. PEG-Leiter + GARP-Asymmetrie)
+6. Deep-Dive-Akkordeons (Moat, Forensik, Red-Team, Verlauf, Quellen)
+7. KI-Chat mit `focusMetric` und Endpoint-Fallback
+
+Neue/erweiterte UI-Bausteine:
+- [../src/components/ReportScorecardRadar.tsx](../src/components/ReportScorecardRadar.tsx)
+- [../src/components/FairValuePanel.tsx](../src/components/FairValuePanel.tsx) (GARP-/Multiples-Erweiterung)
+- [../src/components/ChatPanel.tsx](../src/components/ChatPanel.tsx) (`initialFocusMetric`, Backend-Verfügbarkeitscheck)
+
+Fallback-Strategie im Rendering (verbindlich):
+- Kein leeres Feld/Sentinel: Anzeige als `n/a` mit Grund statt `-`.
+- Dünne Datenlage wird markiert (Radar-Hinweis, Serien unvollständig, fehlende Provider-Daten).
+- Confidence-Dämpfung bei low-confidence-Provenance (z. B. Debt-Rekonsiliation).
+- Teilfehlschläge bleiben sichtbar (`run_integrity` + `trader_cockpit`) und blockieren nicht die restliche Darstellung.
+
+### Quality-GARP Core + Lens
+
+Scoring wurde um den Lens-Typ `quality_garp` erweitert:
+
+- Lens-Registrierung in `src/lib/scoring/lenses.ts`
+- Gatekeeper + Scoring-Logik in `src/lib/scoring/quality-garp.ts`
+- Engine-Reroute-Logik in `src/lib/scoring/engine.ts` (`lensFit=false` -> intern `emerging_winner`)
+
+Neue Core-Metriken im Report-Pfad:
+- `ev_fcf`
+- `fcf_peg`
+- `forward_fcf_cagr`
+- `forward_fcf_cagr_source`
+- `capex_ocf_ratio`
+- `reverse_dcf_asymmetry`
+
+Forward-FCF-CAGR folgt der Kaskade:
+1. Konsens
+2. Historisch 3Y (bei 15% gekappt)
+3. Sektor-Median
   - Quotes-Board: 15 Asset-Kacheln in 6 Kategorien (Indizes / Zinsen / Vol / Rohstoffe / FX / Krypto)
   - Delta-Farbgebung kontextabhängig: neutral (kein Gut/Schlecht) für Rates/Vol/Credit
   - 3-Säulen-Karten mit Subscore-Balken (Breadth / Volatilität / Credit)

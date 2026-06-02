@@ -1,6 +1,7 @@
 /**
  * SourceList – nummerierte Quellenliste mit Klassen-Badge (A..E).
  */
+import React from "react";
 import type { z } from "zod";
 import type { SourceSchema } from "@/lib/schemas/report";
 

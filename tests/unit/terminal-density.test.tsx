@@ -105,16 +105,16 @@ describe("terminal density layout", () => {
     });
   });
 
-  it("renders dense panels and no mandatory accordion markup", async () => {
+  it("renders v2 dashboard panels with deep-dive accordions", async () => {
     const mod = await import("@/app/reports/[id]/page");
     const Page = mod.default;
     const html = renderToStaticMarkup(React.createElement(Page, { params: { id: "r1" } }));
 
     expect(html).toContain("trade-setup-panel");
     expect(html).toContain("market-regime-panel");
-    expect(html).toContain("metrics-panel");
+    expect(html).toContain("metrics-color-blocks");
     expect(html).toContain("charts-row");
     expect(html).toContain("ownership-panel");
-    expect(html).not.toContain("CollapsibleSection");
+    expect(html).toContain("collapsible-content");
   });
 });

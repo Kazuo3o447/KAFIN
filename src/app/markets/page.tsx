@@ -17,7 +17,8 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { MarketChatPanel } from "@/components/MarketChatPanel";
-import type { MarketHealth, AssetQuote, PillarRead } from "@/lib/market/health";
+import { TradingViewChartModal } from "@/components/TradingViewChart";
+import type { MarketHealth, AssetQuote, PillarRead, MomentumComposite } from "@/lib/market/health";
 
 // ── Farb-Utilities ────────────────────────────────────────────────────────────
 
@@ -63,11 +64,15 @@ function formatDelta(pct: number | null | undefined, category: AssetQuote["categ
 
 // ── Kachel-Komponenten ────────────────────────────────────────────────────────
 
-function AssetTile({ quote }: { quote: AssetQuote }) {
+function AssetTile({ quote, onClick }: { quote: AssetQuote; onClick: (q: AssetQuote) => void }) {
   return (
     <div
-      className="bg-secondary-900 rounded-lg border border-secondary-800 px-3 py-2 flex flex-col gap-0.5 min-w-0 cursor-default hover:border-secondary-700 transition-colors"
-      title={quote.isProxy ? "Verzögerter Proxy-Wert" : undefined}
+      role="button"
+      tabIndex={0}
+      className="bg-secondary-900 rounded-lg border border-secondary-800 px-3 py-2 flex flex-col gap-0.5 min-w-0 cursor-pointer hover:border-accent-cyan/40 hover:bg-secondary-800/60 transition-colors"
+      title={quote.isProxy ? "Verzögerter Proxy-Wert · Klick für Chart" : "Klick für TradingView-Chart"}
+      onClick={() => onClick(quote)}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onClick(quote); }}
     >
       <div className="flex items-center justify-between gap-1">
         <span className="text-[10px] text-secondary-500 uppercase tracking-wide truncate font-mono">
@@ -88,11 +93,17 @@ function AssetTile({ quote }: { quote: AssetQuote }) {
       <span className="text-sm font-mono font-bold text-secondary-100 tabular-nums">
         {formatPrice(quote.price, quote.category)}
       </span>
+      {/* MA-Trend Indikator (nur Kurs-basierte Kategorien) */}
+      {quote.maTrend && quote.category !== "rate" && quote.category !== "vol" && (
+        <span className="text-[9px] font-mono text-secondary-600">
+          {quote.maTrend === "above_both" ? "▲ MA" : quote.maTrend === "below_both" ? "▼ MA" : "▷ MA"}
+        </span>
+      )}
     </div>
   );
 }
 
-function QuotesBoard({ quotes }: { quotes: AssetQuote[] }) {
+function QuotesBoard({ quotes, onTileClick }: { quotes: AssetQuote[]; onTileClick: (q: AssetQuote) => void }) {
   const CATEGORY_ORDER: Array<{ cat: AssetQuote["category"]; title: string }> = [
     { cat: "index", title: "Indizes" },
     { cat: "rate", title: "Zinsen" },
@@ -114,12 +125,58 @@ function QuotesBoard({ quotes }: { quotes: AssetQuote[] }) {
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2">
               {items.map((q) => (
-                <AssetTile key={q.symbol} quote={q} />
+                <AssetTile key={q.symbol} quote={q} onClick={onTileClick} />
               ))}
             </div>
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function MomentumBlock({ momentum }: { momentum: MomentumComposite }) {
+  const scoreColor =
+    momentum.score >= 65 ? "text-accent-green" : momentum.score <= 35 ? "text-red-400" : "text-amber-400";
+  return (
+    <div className="bg-secondary-900 rounded-lg border border-secondary-800 p-3">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-[10px] uppercase tracking-widest text-secondary-500 font-bold">Momentum</div>
+        <span className={`text-xs font-mono font-bold tabular-nums ${scoreColor}`}>
+          {momentum.score}/100
+        </span>
+      </div>
+      <div className="h-1 bg-secondary-800 rounded overflow-hidden mb-2">
+        <div
+          className={`h-full rounded transition-all duration-500 ${
+            momentum.score >= 65 ? "bg-accent-green" : momentum.score <= 35 ? "bg-red-500" : "bg-amber-400"
+          }`}
+          style={{ width: `${momentum.score}%` }}
+        />
+      </div>
+      <div className="space-y-1">
+        <div className="flex justify-between text-[10px] font-mono">
+          <span className="text-secondary-600">Trend (MA50/200)</span>
+          <span className="text-secondary-300">{momentum.price.trend.replace(/_/g, " ")}</span>
+        </div>
+        {momentum.price.near52wHigh != null && (
+          <div className="flex justify-between text-[10px] font-mono">
+            <span className="text-secondary-600">Abstand 52w-Hoch</span>
+            <span className={momentum.price.near52wHigh >= -5 ? "text-accent-green" : "text-secondary-300"}>
+              {momentum.price.near52wHigh.toFixed(1)}%
+            </span>
+          </div>
+        )}
+        {momentum.breadth.participation != null && (
+          <div className="flex justify-between text-[10px] font-mono">
+            <span className="text-secondary-600">&gt; MA200</span>
+            <span className="text-secondary-300">{(momentum.breadth.participation * 100).toFixed(0)}%</span>
+          </div>
+        )}
+        <div className="text-[9px] text-secondary-700 font-mono pt-0.5">
+          RS 3m/6m/12m · Revisions · SUE: ausstehend (FMP)
+        </div>
+      </div>
     </div>
   );
 }
@@ -247,6 +304,7 @@ export default function MarketsPage() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [showChat, setShowChat] = useState(false);
+  const [chartQuote, setChartQuote] = useState<AssetQuote | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const load = useCallback(async (refresh = false) => {
@@ -286,6 +344,14 @@ export default function MarketsPage() {
 
   return (
     <main className="min-h-screen bg-secondary-950 text-secondary-100 px-4 py-5 space-y-5 max-w-7xl mx-auto">
+      {/* TradingView Chart Modal */}
+      {chartQuote && (
+        <TradingViewChartModal
+          symbol={chartQuote.symbol}
+          label={chartQuote.label}
+          onClose={() => setChartQuote(null)}
+        />
+      )}
       {/* ── Kopfzeile ─────────────────────────────────────────────────────── */}
       <header className="flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-4">
@@ -375,7 +441,7 @@ export default function MarketsPage() {
 
           {/* ── Quotes-Board ───────────────────────────────────────────── */}
           <section>
-            <QuotesBoard quotes={health.quotes} />
+            <QuotesBoard quotes={health.quotes} onTileClick={setChartQuote} />
           </section>
 
           {/* ── Drei Säulen ───────────────────────────────────────────── */}
@@ -390,10 +456,11 @@ export default function MarketsPage() {
             </div>
           </section>
 
-          {/* ── Zinsen + Faktor ────────────────────────────────────────── */}
-          <section className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {/* ── Zinsen + Faktor + Momentum ───────────────────────────── */}
+          <section className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <RatesBlock rates={health.rates} />
             <FactorBlock factor={health.factor} />
+            {health.momentum && <MomentumBlock momentum={health.momentum} />}
           </section>
 
           {/* ── Divergenz-Banner ───────────────────────────────────────── */}

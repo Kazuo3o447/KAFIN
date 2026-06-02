@@ -16,7 +16,7 @@ export const CategorySchema = z.enum([
 ]);
 export const GateSchema = z.enum(["Green", "Yellow", "Red"]);
 export const ConfidenceSchema = z.enum(["low", "medium", "high"]);
-export const LensSchema = z.enum(["quality_compounder", "emerging_winner"]);
+export const LensSchema = z.enum(["quality_compounder", "emerging_winner", "quality_garp"]);
 export const RegimeSchema = z.enum(["risk_on", "neutral", "risk_off"]);
 export const ScoreTrendSchema = z.enum(["up", "down", "flat"]);
 export const RubricClassSchema = z.enum([
@@ -92,7 +92,15 @@ export const KeyMetricsSchema = z.object({
   ev_ebit: numOrNull,
   ev_ebit_to_growth: numOrNull,      // EV/EBIT ÷ EBIT-CAGR-fwd — PEG Fallback Level 2
   ev_sales_to_growth: numOrNull,     // EV/Sales ÷ Rev-CAGR-fwd (PSG) — PEG Fallback Level 4
-  peg_fallback_level: numOrNull,     // 1=forward PEG, 2=EV/EBIT-to-Growth, 3=EV/GP, 4=PSG, null=none
+  peg_fallback_level: numOrNull,     // 1=forward PEG, 2=EV/EBIT-to-Growth, 2.5=FCF-PEG, 3=EV/GP, 4=PSG
+
+  // GARP Core-Upgrades
+  ev_fcf: numOrNull,                 // EV / FCF TTM
+  fcf_peg: numOrNull,                // (EV/FCF) / (fwd_fcf_growth × 100)
+  forward_fcf_cagr: numOrNull,       // Forward FCF CAGR (Konsens → hist. Fallback)
+  forward_fcf_cagr_source: z.enum(["consensus", "historical_capped", "sector_median"]).nullable().default(null),
+  capex_ocf_ratio: numOrNull,        // |capex| / operating_cash_flow (Skalierbarkeit)
+  reverse_dcf_asymmetry: numOrNull,  // forward_fcf_cagr − implied_growth_rate
 
   // Short Interest (fixing §1 bug: was showing net_debt_to_ebitda)
   short_interest_pct_float: numOrNull,

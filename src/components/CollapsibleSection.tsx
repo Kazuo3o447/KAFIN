@@ -4,6 +4,7 @@
  * Phase F.4
  */
 "use client";
+import React from "react";
 import { useState, type ReactNode } from "react";
 
 interface Props {
