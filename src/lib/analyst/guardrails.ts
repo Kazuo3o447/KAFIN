@@ -1,5 +1,6 @@
 import type { Report } from "@/lib/schemas/report";
 import { THRESHOLDS } from "@/lib/research/thresholds";
+import type { AxisKey } from "@/lib/scoring/axes";
 
 export type CatalystStatus = "confirmed" | "speculative";
 
@@ -11,6 +12,102 @@ export interface AnalystCatalyst {
   sourceDate?: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// KI Axis Judgment (P2)
+// ---------------------------------------------------------------------------
+
+export type MoatSource =
+  | "network_effect"
+  | "switching_costs"
+  | "intangibles"
+  | "cost_advantage"
+  | "efficient_scale"
+  | null;
+
+export interface KiEvidenceItem {
+  claim: string;
+  sourceRef: string;
+}
+
+export interface KiAxisJudgment {
+  axis: AxisKey;
+  cot: string;
+  ki_subscore: number;       // 0-100
+  confidence: number;        // 0-1
+  rating: string;
+  moatSource?: MoatSource;
+  durabilityYears?: number | null;
+  evidence: KiEvidenceItem[];
+  threats: string[];
+}
+
+/** Result of verifying a KiAxisJudgment against the deterministic report. */
+export interface VerifierResult {
+  /** fraction of evidence items that are grounded in the report numbers (0-1) */
+  hitRate: number;
+  groundedCount: number;
+  totalClaims: number;
+}
+
+/**
+ * Verifies that KI evidence items cite numbers that exist in the report.
+ * A claim is considered "grounded" when the report contains at least one
+ * number within analyst_number_tolerance of a number found in the claim text.
+ */
+export function verifyKiAxisJudgment(report: Readonly<Report>, judgment: KiAxisJudgment): VerifierResult {
+  const reportNumbers = collectNumbers(report);
+  if (judgment.evidence.length === 0) return { hitRate: 0, groundedCount: 0, totalClaims: 0 };
+
+  let grounded = 0;
+  for (const item of judgment.evidence) {
+    const tokens = (item.claim + " " + item.sourceRef).match(NUMBER_PATTERN) ?? [];
+    const hasGroundedNumber = tokens.some((t) => {
+      const parsed = parseNumberToken(t);
+      return parsed !== null && numberCovered(parsed, reportNumbers) !== null;
+    });
+    if (hasGroundedNumber) grounded++;
+  }
+
+  const hitRate = grounded / judgment.evidence.length;
+  return { hitRate, groundedCount: grounded, totalClaims: judgment.evidence.length };
+}
+
+/**
+ * Clamps ki_subscore to valid range and ensures confidence is bounded.
+ * Returns null if the judgment is structurally invalid (missing required fields).
+ */
+export function sanitizeKiAxisJudgment(raw: unknown): KiAxisJudgment | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.axis !== "string") return null;
+  if (typeof r.ki_subscore !== "number" || !Number.isFinite(r.ki_subscore)) return null;
+  if (typeof r.confidence !== "number" || !Number.isFinite(r.confidence)) return null;
+  if (typeof r.rating !== "string") return null;
+  const axis = r.axis as AxisKey;
+  const ki_subscore = Math.max(0, Math.min(100, r.ki_subscore));
+  const confidence = Math.max(0, Math.min(1, r.confidence));
+  const evidence: KiEvidenceItem[] = Array.isArray(r.evidence)
+    ? (r.evidence as KiEvidenceItem[]).filter(
+        (e) => e && typeof e.claim === "string" && typeof e.sourceRef === "string",
+      )
+    : [];
+  const threats: string[] = Array.isArray(r.threats)
+    ? (r.threats as string[]).filter((t) => typeof t === "string")
+    : [];
+  return {
+    axis,
+    cot: typeof r.cot === "string" ? r.cot : "",
+    ki_subscore,
+    confidence,
+    rating: r.rating as string,
+    moatSource: (r.moatSource as MoatSource) ?? null,
+    durabilityYears: typeof r.durabilityYears === "number" ? r.durabilityYears : null,
+    evidence,
+    threats,
+  };
+}
+
+// ---------------------------------------------------------------------------
 export interface GuardrailInput {
   thesis: string;
   numbersSay: string;

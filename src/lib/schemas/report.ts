@@ -88,6 +88,16 @@ export const KeyMetricsSchema = z.object({
   net_revenue_retention: numOrNull,  // SaaS NRR
   arr_growth_yoy: numOrNull,         // SaaS ARR growth
 
+  // Valuation extras + PEG Fallback Leiter (§3a)
+  ev_ebit: numOrNull,
+  ev_ebit_to_growth: numOrNull,      // EV/EBIT ÷ EBIT-CAGR-fwd — PEG Fallback Level 2
+  ev_sales_to_growth: numOrNull,     // EV/Sales ÷ Rev-CAGR-fwd (PSG) — PEG Fallback Level 4
+  peg_fallback_level: numOrNull,     // 1=forward PEG, 2=EV/EBIT-to-Growth, 3=EV/GP, 4=PSG, null=none
+
+  // Short Interest (fixing §1 bug: was showing net_debt_to_ebitda)
+  short_interest_pct_float: numOrNull,
+  days_to_cover: numOrNull,
+
   // v2: Applicability- and trend-sensitive metrics
   rule_of_20: numOrNull,
   revenue_growth_latest_q: numOrNull,
@@ -197,6 +207,9 @@ const MarketContextSummarySchema = z.object({
   vix_percentile_1y: numOrNull,
   high_yield_spread: numOrNull,
   yield_curve_10y2y: numOrNull,
+  market_posture_score: numOrNull,
+  market_posture_label: z.enum(["risk_off", "neutral", "risk_on"]).nullable().default(null),
+  market_pillar_agreement: numOrNull,
 });
 
 const SectorBaselineUsedSchema = z.object({
@@ -502,8 +515,23 @@ export const ReportSchema = z.object({
       financials_quarterly: z.array(z.record(z.string(), z.unknown())).default([]),
       dilution: z.array(z.record(z.string(), z.unknown())).default([]),
       valuation: z.array(z.record(z.string(), z.unknown())).default([]),
+      /** Echte Jahres-Zeitreihen für Real-Charts (§8) */
+      financials_annual: z
+        .array(
+          z.object({
+            year: z.string(),
+            revenue: z.number().nullable().default(null),
+            grossProfit: z.number().nullable().default(null),
+            ebit: z.number().nullable().default(null),
+            fcf: z.number().nullable().default(null),
+            grossMargin: z.number().nullable().default(null),
+            operatingMargin: z.number().nullable().default(null),
+            fcfMargin: z.number().nullable().default(null),
+          }),
+        )
+        .default([]),
     })
-    .default({ financials_quarterly: [], dilution: [], valuation: [] }),
+    .default({ financials_quarterly: [], dilution: [], valuation: [], financials_annual: [] }),
 
   // Phase A: Forensik / Business Model (optional, default null/empty)
   business_model_type: z.string().default(""),
@@ -729,6 +757,33 @@ export const ReportSchema = z.object({
     weakest_block: BlockKeySchema.nullable().default(null),
     detail: z.string().max(200).default(""),
   }).nullable().default(null),
+
+  // P1: Drei-Achsen-Modell (Growth · Finance · Moat)
+  axes: z.array(z.object({
+    axis: z.enum(["growth", "finance", "moat"]),
+    quant: z.object({
+      value: z.number().min(0).max(100).nullable().default(null),
+      coverage: z.number().min(0).max(1).default(0),
+      inputs: z.array(z.string()).default([]),
+      source: z.enum(["quant", "ki"]).default("quant"),
+    }),
+    ki: z.object({
+      value: z.number().min(0).max(100).nullable().default(null),
+      coverage: z.number().min(0).max(1).default(0),
+      inputs: z.array(z.string()).default([]),
+      source: z.enum(["quant", "ki"]).default("ki"),
+    }).nullable().default(null),
+    combined: z.number().min(0).max(100).nullable().default(null),
+    divergence: z.number().nullable().default(null),
+    kiWeightEffective: z.number().min(0).max(1).default(0),
+    rating: z.string().nullable().default(null),
+  })).default([]),
+
+  // P1: Safety-Gate Ergebnis
+  safety_gate: z.object({
+    status: z.enum(["ok", "warn", "blocked"]).default("ok"),
+    reasons: z.array(z.string()).default([]),
+  }).default({ status: "ok", reasons: [] }),
 });
 
 export type Report = z.infer<typeof ReportSchema>;

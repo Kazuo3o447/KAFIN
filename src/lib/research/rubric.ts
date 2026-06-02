@@ -123,22 +123,22 @@ export const RESEARCH_BLOCK_RUBRIC: Record<BlockKey, BlockRubric> = {
     purpose: "Ist die Rendite verteidigbar?",
     indicators: [
       {
-        key: "moat_source_evidence",
-        label: "Moat-Quelle belegt",
-        guidance: "Pruefe Netzwerkeffekt, Wechselkosten, immaterielle Assets, Kostenvorteil oder effiziente Skalierung.",
-        aliases: ["moat", "network effect", "switching cost", "intangible assets", "cost advantage"],
-      },
-      {
-        key: "quantitative_moat_trace",
-        label: "Quantitative Moat-Spuren",
-        guidance: "Bewerte ROIC > WACC, stabile hohe Bruttomarge, Marktanteil, Retention, Pricing Power oder sinkende CAC-Payback.",
-        aliases: ["roic", "pricing power", "retention", "market share"],
+        key: "moat_returns_composite",
+        label: "Returns-Evidenz-Komposit (ROIC, Adj.ROIC, Fade-Rate)",
+        guidance: "De-korreliertes Komposit aus ROIC-WACC-Spread, F&E-adjustiertem ROIC (Mauboussin) und ROIC-Fade-Rate. Gedeckelt bei 7/10 für rein quantitative Evidenz.",
+        aliases: ["roic", "roic wacc", "adjusted roic", "returns on capital"],
       },
       {
         key: "durability_trend",
         label: "Dauerhaftigkeit und Trend",
         guidance: "Bewerte, ob der Vorteil 10+ Jahre haltbar wirkt oder durch Wettbewerb, KI, Regulierung oder Kosten erodiert.",
         aliases: ["durability", "trend", "competition", "commoditization"],
+      },
+      {
+        key: "moat_source_evidence",
+        label: "Moat-Quelle belegt (KI-Qualitätsurteil)",
+        guidance: "Pruefe Netzwerkeffekt, Wechselkosten, immaterielle Assets, Kostenvorteil oder effiziente Skalierung.",
+        aliases: ["moat", "network effect", "switching cost", "intangible assets", "cost advantage"],
       },
       {
         key: "business_quality_returns",

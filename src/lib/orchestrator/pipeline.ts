@@ -6,6 +6,7 @@ import path from "node:path";
 import { db, schema } from "@/lib/storage/db";
 import { eq } from "drizzle-orm";
 import { emitRun, logRun } from "./events";
+import { STEP_MANIFEST } from "./step-manifest";
 import {
   stepFetchBaseData,
   stepDeriveMetrics,
@@ -27,25 +28,24 @@ import {
 
 const DATA_DIR = process.env.DATA_DIR || "./data";
 
-// Sequentielle Steps vor dem parallelen LLM-Block
-const PRE_STEPS: Array<{ key: string; label: string; pct: number; fn: (s: PipelineState) => Promise<unknown> }> = [
-  { key: "fetch", label: "Datenquellen abrufen", pct: 15, fn: stepFetchBaseData },
-  { key: "normalize", label: "Dataset normalisieren", pct: 18, fn: stepNormalizeDataset },
-  { key: "metrics", label: "Kennzahlen deterministisch berechnen", pct: 22, fn: stepDeriveMetrics },
-  { key: "context", label: "Kontext aufbauen", pct: 30, fn: stepBuildContext },
-];
-
-// Sequentielle Steps nach dem parallelen LLM-Block
-const POST_STEPS: Array<{ key: string; label: string; pct: number; fn: (s: PipelineState) => Promise<unknown> }> = [
-  { key: "score",       label: "Scoring & Gate",                   pct: 70, fn: stepComputeScoreAndGate },
-  { key: "timing",      label: "Timing-Achse & Regime",            pct: 73, fn: stepComputeTimingAxis },
-  { key: "peer",        label: "Peer-Percentile-Analyse",          pct: 75, fn: stepComputePeerPercentiles },
-  { key: "fair_value",  label: "Fair-Value-Berechnung",            pct: 78, fn: stepComputeFairValue },
-  { key: "trade_setup", label: "Trade-Setup berechnen",            pct: 84, fn: stepComputeTradeSetup },
-  { key: "analyst",     label: "KI-Analyst (optional)",            pct: 90, fn: stepInterpretAnalyst },
-  { key: "verdict",     label: "Verdict-Generation (LLM)",         pct: 96, fn: stepGenerateVerdict },
-  { key: "persist",     label: "Persistieren",                     pct: 100, fn: stepPersist },
-];
+// Step-Funktionen — geordnet nach STEP_MANIFEST. Manifest ist kanonische Quelle für keys/labels/pct.
+type StepFn = (s: PipelineState) => Promise<unknown>;
+const STEP_FNS: Record<string, StepFn> = {
+  fetch:      stepFetchBaseData,
+  normalize:  stepNormalizeDataset,
+  metrics:    stepDeriveMetrics,
+  context:    stepBuildContext,
+  extract:    stepExtractFacts,
+  sections:   stepAnswerSections,
+  score:      stepComputeScoreAndGate,
+  timing:     stepComputeTimingAxis,
+  peer:       stepComputePeerPercentiles,
+  fair_value: stepComputeFairValue,
+  trade_setup:stepComputeTradeSetup,
+  analyst:    stepInterpretAnalyst,
+  verdict:    stepGenerateVerdict,
+  persist:    stepPersist,
+};
 
 export interface StartRunInput {
   runId: string;
@@ -85,25 +85,97 @@ export async function runPipeline(input: StartRunInput): Promise<void> {
     emitRun(input.runId, "progress", { pct: 0 });
 
     // Helper: einen benannten Step laufen lassen + Events senden
-    async function runStep(step: { key: string; label: string; pct: number; fn: (s: PipelineState) => Promise<unknown> }) {
-      emitRun(input.runId, "step:start", { step: step.key, label: step.label });
+    async function runStep(key: string): Promise<void> {
+      const meta = STEP_MANIFEST.find((s) => s.key === key);
+      if (!meta) throw new Error(`Unknown step key: ${key}`);
+      const fn = STEP_FNS[key];
+      if (!fn) throw new Error(`No function registered for step: ${key}`);
+
+      emitRun(input.runId, "step:start", { step: key, label: meta.label });
       const t0 = Date.now();
-      await step.fn(state);
+      let ok = true;
+      let errMsg: string | undefined;
+      try {
+        await fn(state);
+      } catch (err) {
+        ok = false;
+        errMsg = err instanceof Error ? err.message : String(err);
+        logRun(input.runId, "warn", `[pipeline] step ${key} failed: ${errMsg}`);
+      }
       const ms = Date.now() - t0;
-      emitRun(input.runId, "step:done", { step: step.key, ms, ok: true });
-      emitRun(input.runId, "progress", { pct: step.pct });
-      db.update(schema.runs).set({ progress: step.pct }).where(eq(schema.runs.id, input.runId)).run();
+
+      // Build optional summary for the findings panel
+      let summary: string | undefined;
+      if (key === "fetch") {
+        const ds = state.normalizedDataset ?? state.companyDataset;
+        const annualCount = ds?.annual?.length ?? 0;
+        if (annualCount > 0) summary = `${annualCount} Jahresperioden geladen`;
+        // Also emit meta event to populate findings panel
+        const identity = ds?.identity;
+        if (identity) {
+          emitRun(input.runId, "meta", {
+            ticker,
+            companyName: identity.name,
+            exchange: identity.exchange,
+            currency: identity.currency,
+          });
+        }
+      } else if (key === "normalize") {
+        const ds = state.normalizedDataset ?? state.companyDataset;
+        const identity = ds?.identity;
+        // Emit meta after normalize when identity is more reliably populated
+        if (identity?.name) {
+          emitRun(input.runId, "meta", {
+            ticker,
+            companyName: identity.name,
+            exchange: identity.exchange,
+            currency: identity.currency,
+          });
+        }
+        const annualCount = ds?.annual?.length ?? 0;
+        if (annualCount > 0) summary = `${annualCount} Perioden normalisiert`;
+      } else if (key === "metrics") {
+        const km = state.derivedMetrics;
+        if (km) {
+          const parts: string[] = [];
+          if (km.revenue_growth_yoy != null) parts.push(`RevYoY ${(km.revenue_growth_yoy * 100).toFixed(1)}%`);
+          if (km.roic != null) parts.push(`ROIC ${(km.roic * 100).toFixed(1)}%`);
+          if (km.fcf_margin != null) parts.push(`FCF-Marge ${(km.fcf_margin * 100).toFixed(1)}%`);
+          if (parts.length > 0) summary = parts.join(" · ");
+        }
+      } else if (key === "score") {
+        const sb = state.scoreBreakdown;
+        if (sb && state.scoreTotal != null) {
+          summary = `Score ${state.scoreTotal} · Gate ${state.gate ?? "-"}`;
+        }
+      }
+
+      emitRun(input.runId, "step:done", { step: key, ms, ok, ...(summary ? { summary } : {}) });
+      if (ok) {
+        emitRun(input.runId, "progress", { pct: meta.pct });
+        db.update(schema.runs).set({ progress: meta.pct }).where(eq(schema.runs.id, input.runId)).run();
+      }
     }
 
     // Phase 1: sequentielle Vorbereitung
-    for (const step of PRE_STEPS) await runStep(step);
+    await runStep("fetch");
+    await runStep("normalize");
+    await runStep("metrics");
+    await runStep("context");
 
-    // Phase 2: deterministische Extraktion + Rubric-Funktionen
-    await runStep({ key: "extract", label: "Fakten extrahieren (deterministisch)", pct: 40, fn: stepExtractFacts });
-    await runStep({ key: "sections", label: "Blöcke A–G bewerten (deterministisch)", pct: 70, fn: stepAnswerSections });
+    // Phase 2: Extraktion + Scoring
+    await runStep("extract");
+    await runStep("sections");
 
     // Phase 3: sequentielle Nachverarbeitung
-    for (const step of POST_STEPS) await runStep(step);
+    await runStep("score");
+    await runStep("timing");
+    await runStep("peer");
+    await runStep("fair_value");
+    await runStep("trade_setup");
+    await runStep("analyst");
+    await runStep("verdict");
+    await runStep("persist");
 
     // Done
     db.update(schema.runs)

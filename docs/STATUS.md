@@ -4,7 +4,172 @@
 
 ---
 
+## Aktueller Stand — 2026-06-02 (Update 25)
+
+**Phase:** Markets-Seite & Markt-Gesundheit (vollständig umgesetzt).
+
+### Umgesetzt
+
+#### Markets-Feature: Backend
+
+- **`src/lib/providers/fred.ts`** erweitert: 6 FRED-Serien (DGS10, DFII10, BAMLC0A0CM neu; BAMLH0A0HYM2, T10Y2Y, VIXCLS bestehend). z-Score-Helfer `mean()`, `stdDev()`, `zScore()`. Gibt zurück: `highYieldSpreadZScore1y`, `highYieldSpreadZScore3y`, `igSpread`, `tenYNominal`, `tenYReal`.
+- **`src/lib/providers/types.ts`**: `"market_quotes"` zur `Capability`-Union hinzugefügt.
+- **`src/lib/providers/market-quotes.ts`** (NEU): Yahoo-Finance-basierter Quotes-Fetcher für 15 Assets in 6 Kategorien (Index, Rate, Vol, Commodity, FX, Crypto). Gibt `AssetQuote[]` mit `price`, `change1d`, `change1dPct`, `asOf`, `isProxy`, `category`, `currency` zurück.
+- **`src/lib/market/health.ts`** (NEU): Kern-MarketHealth-Modul.
+  - 3-Säulen-Scoring (Volatilität 30%, Credit 35%, Breadth 35%) mit `PostureLabel` (`risk_off`/`neutral`/`risk_on`).
+  - Rates-Modifier (±5 für Inversion/Real-Yield), Divergenz-Erkennung, Factor-Regime-Block.
+  - `computeMarketHealth(input)` → `MarketHealth` (Score 0–100, `pillarAgreement` 0–3).
+  - `fetchAndComputeMarketHealth()` → parallel FRED + Yahoo, mit In-Memory-Cache TTL 30 min (Handelszeiten) / 60 min (außerhalb). Re-exportiert `AssetQuote`-Typ.
+- **`src/lib/research/thresholds.ts`**: 3 neue Schwellen: `market_vix_panic: 30`, `market_move_stress: 120`, `market_hy_zScore_stress: 2.0`.
+- **`GET /api/market/health/route.ts`** (NEU): gibt `MarketHealth`-JSON zurück; `?refresh=1` invalidiert Cache.
+- **`POST /api/market/analyze/route.ts`** (NEU): SSE-Streaming-LLM-Analyse. `messages=[]` → Regime-Brief; `messages≥1` → Chat über Marktkontext. Gleiches LLM-Routing wie Report-Chat. Guardrails: geerdet im Kontext, keine erfundenen Zahlen. Nach Stream-Ende: Cache-Summary aktualisiert.
+
+#### Markets-Feature: UI
+
+- **`src/components/MarketChatPanel.tsx`** (NEU): Streaming-Chat analog `ChatPanel`. Erster Aufruf generiert Regime-Brief-Button; Folge-Aufruf = interaktiver Chat. Stop-Button, Auto-Scroll.
+- **`src/app/markets/page.tsx`** (NEU): `/markets`-Dashboard — Terminal-Kachel-Layout:
+  - Kopfzeile: Posture-Label + Score/100 + Säulen-Zähler + as-of-Stamp.
+  - Quotes-Board: 15 Asset-Kacheln, nach Kategorie gruppiert, delta-Farbe kontextabhängig (neutral für Rates/Vol).
+  - 3-Säulen-Karten (Breadth, Volatilität, Credit) mit Subscore-Balken + Inputs-Detail.
+  - Zins-/Duration-Block (10Y nominal, real, ERP, Kurve) + Faktor-Regime-Block.
+  - Divergenz-Banner (amber) wenn `health.divergences.length > 0`.
+  - KI-Marktanalyse (`MarketChatPanel`) kollabierbar.
+  - KI-Kurzanalyse wenn `health.summary !== null`.
+  - Refresh-Button + Error-Banner.
+- **`src/app/layout.tsx`**: „Märkte"-Nav-Link nach Reports eingefügt.
+
+#### Markets-Feature: Pipeline-Integration
+
+- **`src/lib/schemas/report.ts`**: `MarketContextSummarySchema` um `market_posture_score`, `market_posture_label`, `market_pillar_agreement` erweitert.
+- **`src/lib/orchestrator/steps.ts`**:
+  - `PipelineState` um `marketHealth?: MarketHealth` erweitert.
+  - `stepComputeTimingAxis` ruft `fetchAndComputeMarketHealth()` auf (gecacht, non-blocking); Breadth-Proxy bevorzugt echten Wert aus Pillar-Input.
+  - `stepPersist` stempelt `market_posture_score`, `market_posture_label`, `market_pillar_agreement` in `report.market_context`.
+
+### Verifiziert (Update 25)
+
+- `npm run typecheck` ✅ (exit 0)
+- `npm test` ✅ (67/67 Dateien, 206/206 Tests)
+
+---
+
+## Aktueller Stand — 2026-06-02 (Update 24)
+
+**Phase:** D1 Finnhub news_sentiment + UI-Chat + Research-Ladebildschirm.
+
+### Umgesetzt
+
+#### D1: Finnhub news_sentiment
+- `"news_sentiment"` zu `Capability`-Union in `src/lib/providers/types.ts` hinzugefügt.
+- `NewsSentimentSchema` + `NewsSentiment`-Typ in `src/lib/schemas/dataset.ts`; `newsSentiment`-Feld in `CompanyDatasetSchema` mit Default `{}`.
+- Finnhub-Adapter (`src/lib/providers/finnhub.ts`): `capabilities` + `priorityByCapability` um `news_sentiment` erweitert; Fetch-Handler gegen `GET /news/sentiment?symbol={ticker}` implementiert.
+- Collect (`src/lib/providers/collect.ts`): `"news_sentiment"` in `COMPANY_CAPABILITIES`; Parse-Pfad + `newsSentiment` im Dataset-Base; `momentumTotal` von 3 → 4 erweitert.
+- Rubric (`src/lib/scoring/rubric-fn.ts`): `news_sentiment_quality` nutzt jetzt primär `newsSentiment.score` (±0.2-Bänder → 8/6/4/2 Punkte); Fallback auf `beatStreak` unverändert.
+
+#### UI-Chat: /api/reports/[id]/chat + ChatPanel
+- `src/app/api/reports/[id]/chat/route.ts` (NEU): POST-Endpunkt, lädt Report-JSON, baut deutschen System-Prompt mit Metriken + Analyst + Verdikt, leitet SSE-Stream von LM Studio/DeepSeek/Groq durch; Timeout 60 s.
+- `src/components/ChatPanel.tsx` (NEU): Client-Komponente, Props `{ reportId, ticker }`. Features: Nachrichtenverlauf, Streaming mit `▋`-Cursor, Stop-Button, Textarea mit Enter-Shortcut, Error-Display, Auto-Scroll.
+- `src/app/reports/[id]/page.tsx`: `ChatPanel` integriert als Zone 4d (zwischen KI-Analyst-Panel und Zone 5).
+
+#### Research-Ladebildschirm (komplettes Redesign)
+- `src/lib/orchestrator/step-manifest.ts` (NEU): kanonische Step-Liste — 14 Steps, 3 Phasen (`data`/`analysis`/`valuation`), Schlüssel/Label/pct pro Eintrag. Gemeinsame Quelle für Pipeline und UI.
+- `src/lib/orchestrator/events.ts`: `"meta"` zu `RunEventName`-Union hinzugefügt; `MetaEvent`-Interface (`ticker`, `companyName`, `exchange`, `currency`, `sources?`); optionales `summary?: string` auf `StepDoneEvent`.
+- `src/lib/orchestrator/pipeline.ts`: importiert Labels/pct aus `step-manifest.ts`; emittiert `meta`-Event nach `normalize`-Step (Firmenname/Börse/Währung); emittiert `summary`-Snippets für Steps `fetch`, `normalize`, `metrics`, `score`; nicht-fatale Step-Fehler → `ok=false` in `step:done` ohne Pipeline-Abbruch.
+- `src/components/RunStepper.tsx` (NEU): Terminal-Stepper mit 3 Phasengruppen, Icons (✓/△/○/◌-spin), ms-Anzeige nach Abschluss, Live-Log-Zeile unter aktivem Step, `role="list"`, `aria-live="polite"`, Reduced-Motion-Guard.
+- `src/components/RunFindingsPanel.tsx` (NEU): „Bisher gefunden"-Seitenleiste; progressiv befüllt mit Firmenname/Börse/Währung, Datenquellen-Chips, Kennzahlen-Rows aus `metrics`-Summary, Score/Gate aus `score`-Summary.
+- `src/app/run/[ticker]/page.tsx` (komplett ersetzt): 3-Bereich-Layout — Kopfzeile (Ticker · Elapsed mm:ss · %), Haupt-Grid xl:2-spaltig (RunStepper + RunFindingsPanel), Fußzeile (3px Progress-Bar + Log-Toggle). Fortschritt capped auf 99 bis `done`-Event; danach 100% → 1,2s Delay → Redirect zu `/reports/[id]`. Fehler-Banner mit Retry-Link. Buffer-Replay-fest durch zustandsbasierte Event-Verarbeitung.
+
+### Verifiziert (Update 24)
+
+- `npm run typecheck` ✅ (exit 0)
+- `npm test` ✅ (67/67 Dateien, 206/206 Tests)
+
+---
+
+## Aktueller Stand — 2026-06-02 (Update 23)
+
+**Phase:** SCORING V2 + KI-ANALYST (P0–P3) — abgeschlossen.
+
+### Umgesetzt (P0–P3)
+
+#### P0: Daten-Bugs behoben
+- **WACC-Pfad-Konsistenz:** `computeWACC()` (CAPM + Debt-Blend) als geteilte Funktion in `derived-metrics.ts`; beide Scoring-Pfade (`deriveKeyMetrics` + `deriveMetricsFromDataset`) verwenden dieselbe Logik.
+- **`netDebtToEbitda`:** Verwendet jetzt EBITDA als Nenner (vorher fälschlicherweise EBIT).
+- **Regressions-Test:** `tests/unit/p0-wacc-consistency.test.ts` — WACC-Konsistenz + EBITDA-Nenner verifiziert.
+
+#### P1: Drei-Achsen-Modell
+- **`src/lib/scoring/axes.ts`** (neu): Growth · Finance · Moat, je 0–100. Quant-Aggregation aus Block-Ergebnissen, KI-Layer in P1 null.
+- **`src/lib/scoring/safety-gate.ts`** (neu): Hard-Veto unabhängig vom Score (Liquidität, Überschuldung).
+- **`src/lib/scoring/rubric-fn.ts`:** `scoreLinear()`, de-korrelierte Indikatoren (`customer_retention_expansion`, `tam_share_gain_evidence`), `moat_returns_composite` (ROIC-Spread + roicAdj + roicFadeRate, gedeckelt bei 70).
+- **`src/lib/research/derived-metrics.ts`:** `roicAdj` (Mauboussin R&D-Kapitalisierung) + `roicFadeRate` (lineare Regression über 5 Jahre).
+- **Schema** (`report.ts`): `axes[]` + `safety_gate` hinzugefügt.
+
+#### P2: KI-Analyst Critic Upgrade
+- **`src/lib/llm/prompts.ts`:** `KI_AXIS_SYSTEM` + `KI_AXIS_USER()` — Chain-of-Thought Pflichtfeld, Mauboussin 4-Schritt für Moat-Achse, Evidence mit `claim` + `sourceRef`.
+- **`src/lib/analyst/guardrails.ts`:** `KiAxisJudgment`-Interface, `verifyKiAxisJudgment()` (Hit-Rate-Verifier), `sanitizeKiAxisJudgment()`.
+- **`src/lib/analyst/interpret.ts`:** `judgeAxis()` + `interpretAxes()` — KI-Subscore-Blending mit `kiWeightEffective = kiWeightMax × confidence`; Divergenz-Flagging.
+- **Orchestrator:** `stepInterpretAnalyst` führt nach Analyst-Pass `interpretAxes` aus; `needsAxisReview` wenn Divergenz ≥ 25.
+
+#### P3: Polish
+- **Archetype-Labels:** `pickArchetype()` in `engine.ts` nutzt Achsen-Profil für differenzierte Kategorie-Auswahl (alle drei Achsen-Werte fließen ein).
+- **XLSX-Export:** Neuer "Axes"-Tab mit Quant/KI/Kombiniert/Divergenz/Gewicht/Rating + Safety-Gate-Zusammenfassung.
+- **score_history:** Drei neue Spalten (`axes_json`, `safety_status`, `archetype`); idempotente Migration in `db.ts`; `persistScoreHistoryEntry` übergibt Achsen-Snapshot.
+- **Drizzle-Migration:** `drizzle/migrations/0003_axes_tracking.sql`.
+
+### Verifiziert (Update 23)
+
+- `npm run typecheck` ✅ (exit 0)
+- `npm test` ✅ (67/67 Dateien, 206/206 Tests)
+
+### Nächste Schritte
+
+- P3-Erweiterung: Archetype-Labels in UI (ScoreKpiStrip o.ä.) sichtbar machen (derzeit nur in Report-Kategorie-Feld vorhanden).
+- KI-Achsen-Scores in `ScoreTrendSparkline` oder Dashboard einblenden (wenn axes in Report-Persistenz gespeichert).
+- Regression-Test für die drei Achsen (AXON/MSFT Fixture).
+
+---
+
 ## Aktueller Stand — 2026-06-01 (Update 22)
+
+**Phase:** PHASE 6C — Trader-Terminal, Trade-Setup & KI-Beraterebene.
+
+### Umgesetzt
+
+- **Trade-Setup konsequent im Pipeline-/Report-Pfad:**
+  - `trade_setup` wird im Analyst-Kontext und finalen Report-Persistenzpfad in `src/lib/orchestrator/steps.ts` durchgaengig gefuehrt.
+  - `resolveModels()` respektiert `LLM_MODEL` als globalen Default fuer die komplette Run-Kette.
+- **Analyst-Beraterebene vervollstaendigt:**
+  - Analyst ist standardmaessig aktiv, wenn nicht explizit deaktiviert (`ENABLE_ANALYST_LLM !== "0"`).
+  - Thesis/Open-Questions/Falsifikation werden im State aus den neuen Advisor-Feldern (`numbersSay`, `entryTrigger`, `exitWatchTrigger`) gespiegelt.
+- **LM-Studio Base-URL-Alias harmonisiert:**
+  - `src/lib/llm/ollama.ts` akzeptiert jetzt `LLM_BASE_URL` (vor `LM_STUDIO_BASE_URL`/`OLLAMA_BASE_URL`).
+- **Trader-Terminal UI (dicht, nicht accordion-first):**
+  - `src/app/reports/[id]/page.tsx` als kompaktes Terminal-Layout neu gebaut:
+    - 1-zeilige Statusleiste
+    - 3-Panel-Toprow (`Trade Setup`, `Verdikt`, `Markt Regime`)
+    - immer sichtbare Kennzahlen + Momentum-Reihe
+    - 3 Mini-Chart-Panels
+    - Ownership/Smart-Money-Reihe
+    - KI-Beraterblock mit expliziten Entry/Exit-Triggern
+  - Keine verpflichtenden `CollapsibleSection`-Container fuer Kerninformationen.
+
+### Neue Tests (Phase 6C)
+
+- `tests/unit/trade-setup.test.ts`
+- `tests/unit/analyst-advisor.test.ts`
+- `tests/unit/terminal-density.test.tsx`
+- `tests/unit/missing-data-inline.test.tsx`
+- `tests/unit/no-recompute.test.ts`
+- `vitest.config.ts` erweitert fuer `.test.tsx`.
+
+### AXON Referenz
+
+- Das 6C-Layout ist fuer den Trader-Workflow auf schnelle Entscheidungslesbarkeit optimiert (AXON-Referenzstil): erst Setup/Regime/Actionability, danach Details und Quellen.
+
+### Verifiziert (Update 22)
+
+- `npm run typecheck` ✅ (exit 0)
+- `npm test` ✅ (66/66 Dateien, 197/197 Tests)
 
 **Phase:** PHASE 6C — Trader-Terminal, Trade-Setup & KI-Beraterebene.
 

@@ -27,6 +27,8 @@ import {
   OwnershipSchema,
   type ShortInterest,
   ShortInterestSchema,
+  type NewsSentiment,
+  NewsSentimentSchema,
   tracked,
 } from "@/lib/schemas/dataset";
 import { resolveSymbol } from "@/lib/providers/symbol-resolution";
@@ -45,6 +47,7 @@ const COMPANY_CAPABILITIES: Capability[] = [
   "short_interest",
   "analyst",
   "segments",
+  "news_sentiment",
 ];
 
 interface GatherOptions {
@@ -393,11 +396,12 @@ function parseCoverage(dataset: Omit<CompanyDataset, "coverage">): CoverageRepor
     dataset.estimates.revenueFwd.length > 0,
   ].filter(Boolean).length;
 
-  const momentumTotal = 3;
+  const momentumTotal = 4;
   const momentumFilled = [
     dataset.earningsHistory.length >= 8,
     dataset.analyst.count !== null,
     dataset.prices.daily.length >= 252,
+    dataset.newsSentiment.score !== null,
   ].filter(Boolean).length;
 
   const ownershipTotal = 4;
@@ -584,6 +588,18 @@ export async function gatherCompanyDatasetDetailed(
     asOf: typeof shortData?.asOf === "string" ? shortData.asOf : null,
   });
 
+  const sentimentResult = byCap.get("news_sentiment") ?? null;
+  const sentimentData = sentimentResult?.data as Record<string, unknown> | undefined;
+  const newsSentiment: NewsSentiment = NewsSentimentSchema.parse({
+    score: toNum(sentimentData?.score),
+    bullishPct: toNum(sentimentData?.bullishPct),
+    bearishPct: toNum(sentimentData?.bearishPct),
+    articlesInLastWeek: toNum(sentimentData?.articlesInLastWeek),
+    buzz: toNum(sentimentData?.buzz),
+    provenance: sentimentResult ? sentimentResult.provenance.map((p) => withStale(p, runDate)) : [],
+    asOf: runDate,
+  });
+
   const segmentResult = byCap.get("segments") ?? null;
   const segmentData = segmentResult?.data as Record<string, unknown> | undefined;
   const segments = Array.isArray(segmentData?.segments)
@@ -656,6 +672,7 @@ export async function gatherCompanyDatasetDetailed(
     segments,
     saas,
     analyst,
+    newsSentiment,
   };
 
   const coverage = parseCoverage(datasetBase);

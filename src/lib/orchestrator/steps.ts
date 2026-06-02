@@ -19,14 +19,11 @@ import { fetchAllFacts } from "@/lib/providers";
 import { gatherCompanyDatasetDetailed, gatherMarketContextDetailed } from "@/lib/providers/collect";
 import type {
   CapabilityFetchDiagnostic,
-  GatherDiagnostics,
   ProviderResult,
   ProviderFact,
-  RawArtifact,
 } from "@/lib/providers/types";
 import { atomicWrite } from "@/lib/utils/atomic-write";
 import { chatJSON, pickDefaultModel } from "@/lib/llm/ollama";
-import { getLLMConfig } from "@/lib/llm/config";
 import {
   SECTION_BLOCKS,
   type BlockId,
@@ -42,7 +39,7 @@ import { classifyMarketRegime, type RegimeResult } from "@/lib/research/regime";
 import { buildTimingOutput, type TimingOutput } from "@/lib/scoring/timing";
 import { computeEstimatesSignals } from "@/lib/research/estimates-signals";
 import { computeOwnershipSignals } from "@/lib/research/ownership-signals";
-import { interpretReport, type AnalystBlock } from "@/lib/analyst/interpret";
+import { interpretReport, interpretAxes, type AnalystBlock } from "@/lib/analyst/interpret";
 import { buildAnalystEvidence } from "@/lib/analyst/evidence";
 import {
   computePiotroskiF,
@@ -57,24 +54,18 @@ import { computePeerPercentiles, type PeerPercentiles } from "@/lib/research/pee
 import { deriveConfidenceScore } from "@/lib/research/combo-signals";
 import { detectProviderConflicts, conflictsToRedFlags } from "@/lib/research/conflict-detector";
 import { buildResearchContext } from "@/lib/research/context";
-import { deriveKeyMetrics, mergeDeterministicMetrics, type DerivedMetricsResult } from "@/lib/research/derived-metrics";
+import { deriveKeyMetrics, deriveMetricsFromDataset, mergeDeterministicMetrics, type DerivedMetricsResult } from "@/lib/research/derived-metrics";
 import { THRESHOLDS } from "@/lib/research/thresholds";
-import { validateBlockSources } from "@/lib/research/source-validation";
-import { buildMoatAssessment, deriveResearchSignals } from "@/lib/research/signals";
-import { sanitizeInvestmentStrings } from "@/lib/research/output-sanitizer";
-import { clusterRedFlags, type RedFlagCluster } from "@/lib/research/redflag-cluster";
-import { buildMetricApplicability } from "@/lib/research/metric-applicability";
-import { findRationaleConsistencyIssues } from "@/lib/research/rationale-consistency";
-import { sanitizeSummaryClaims } from "@/lib/research/summary-consistency";
+import { buildMoatAssessment } from "@/lib/research/signals";
+import { type RedFlagCluster } from "@/lib/research/redflag-cluster";
 import { buildDebtBreakdown, type DebtBreakdown } from "@/lib/research/debt-breakdown";
-import { evaluateHardBlockers } from "@/lib/research/hard-blocker-policy";
 import { applyConfidenceCaps, type DataCoverage } from "@/lib/scoring/confidence-cap";
-import { deterministicIndicatorScore } from "@/lib/scoring/deterministic";
 import { computeFairValue, type FairValueResult, type FairValueReverseDcfCheck } from "@/lib/research/fair-value";
 import { buildVerdict, sanitizeVerdictDetail, type VerdictResult } from "@/lib/research/verdict";
 import { computeTradeSetup, type TradeSetup } from "@/lib/research/trade-setup";
 import { VERDICT_DETAIL_SYSTEM, VERDICT_DETAIL_USER } from "@/lib/llm/prompts";
 import { persistScoreHistoryEntry } from "@/lib/research/score-history";
+import { fetchAndComputeMarketHealth, type MarketHealth } from "@/lib/market/health";
 import { ASSUMPTIONS_VERSION, DCF_ASSUMPTIONS, MODEL_ASSUMPTIONS } from "@/lib/research/assumptions";
 import {
   ReportSchema,
@@ -108,6 +99,7 @@ export interface PipelineState {
   normalizedDataset?: CompanyDataset;
   normalization?: NormalizationResult;
   marketContext?: MarketContext;
+  marketHealth?: MarketHealth;
   technicals?: TechnicalIndicators;
   regimeResult?: RegimeResult;
   timing?: TimingOutput;
@@ -395,6 +387,22 @@ export async function stepDeriveMetrics(state: PipelineState): Promise<void> {
     "info",
     `[metrics] derived ${Object.keys(result.metrics).length} deterministic key metrics, businessModel=${bm.type}`,
   );
+
+  // Enrich derivedMetrics with dataset-based fields (short interest, PEG fallback from normalised dataset)
+  const ds = state.normalizedDataset ?? state.companyDataset;
+  if (ds) {
+    const dm = deriveMetricsFromDataset(ds);
+    const patch: Partial<KeyMetrics> = {};
+    if (dm.shortInterestPctFloat !== null) patch.short_interest_pct_float = dm.shortInterestPctFloat;
+    if (dm.daysToCover !== null) patch.days_to_cover = dm.daysToCover;
+    if (dm.evEbitToGrowth !== null) patch.ev_ebit_to_growth = dm.evEbitToGrowth;
+    if (dm.evSalesToGrowth !== null) patch.ev_sales_to_growth = dm.evSalesToGrowth;
+    if (dm.pegFallbackLevel !== null) patch.peg_fallback_level = dm.pegFallbackLevel;
+    if (dm.evEbit !== null) patch.ev_ebit = dm.evEbit;
+    if (Object.keys(patch).length > 0) {
+      state.derivedMetrics = { ...(state.derivedMetrics ?? {}), ...patch };
+    }
+  }
 }
 
 // -----------------------------------------------------------
@@ -459,71 +467,8 @@ export async function stepExtractFacts(state: PipelineState): Promise<void> {
 }
 
 // -----------------------------------------------------------
-// Step 4: answerSections (LLM, parallel max 2)
+// Step 4: answerSections
 // -----------------------------------------------------------
-async function runWithConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let cursor = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (true) {
-      const i = cursor++;
-      if (i >= items.length) return;
-      results[i] = await fn(items[i]!);
-    }
-  });
-  await Promise.all(workers);
-  return results;
-}
-
-function clampScore(score: unknown): number | null {
-  if (typeof score !== "number" || !Number.isFinite(score)) return null;
-  return Math.max(0, Math.min(10, score));
-}
-
-function sanitizeBlockResult(block: (typeof SECTION_BLOCKS)[number], data: Partial<BlockResult>): BlockResult {
-  return {
-    block: block.id,
-    indicators: Array.isArray(data.indicators)
-      ? data.indicators.map((i) => ({
-          name: String(i.name ?? ""),
-          score: clampScore(i.score),
-          rationale: String(i.rationale ?? ""),
-          sourceIdx: typeof i.sourceIdx === "number" && Number.isInteger(i.sourceIdx) ? i.sourceIdx : null,
-          scoreType: i.scoreType === "deterministic" || i.scoreType === "hybrid" ? i.scoreType : "llm_judgment",
-          scoreValid: i.scoreValid ?? true,
-          rationaleValid: i.rationaleValid ?? true,
-          sourceSupportStatus:
-            i.sourceSupportStatus === "supported" ||
-            i.sourceSupportStatus === "unsupported" ||
-            i.sourceSupportStatus === "internal_metric"
-              ? i.sourceSupportStatus
-              : "not_checked",
-          metricRefs: Array.isArray(i.metricRefs) ? i.metricRefs.map(String) : [],
-          missingMetricRefs: Array.isArray(i.missingMetricRefs) ? i.missingMetricRefs.map(String) : [],
-          dataStatus:
-            i.dataStatus === "missing_required_data" ||
-            i.dataStatus === "not_applicable" ||
-            i.dataStatus === "unsupported_claim" ||
-            i.dataStatus === "conflicting_data" ||
-            i.dataStatus === "stale_data"
-              ? i.dataStatus
-              : "valid",
-          invalidSourceRefs: Array.isArray(i.invalidSourceRefs) ? i.invalidSourceRefs.map(String) : [],
-        }))
-      : [],
-    confidence: data.confidence === "low" || data.confidence === "high" ? data.confidence : "medium",
-    red_flags: Array.isArray(data.red_flags) ? data.red_flags.map(String) : [],
-    hard_blockers: Array.isArray(data.hard_blockers) ? data.hard_blockers.map(String) : [],
-    moat_rating: data.moat_rating ?? null,
-    moat_evidence: Array.isArray(data.moat_evidence) ? data.moat_evidence.map(String) : [],
-    moat_threats: Array.isArray(data.moat_threats) ? data.moat_threats.map(String) : [],
-  };
-}
-
 export async function stepAnswerSections(state: PipelineState): Promise<void> {
   const dataset = state.normalizedDataset ?? state.companyDataset;
   if (!dataset) {
@@ -719,9 +664,19 @@ export async function stepComputeTimingAxis(state: PipelineState): Promise<void>
     sectorBenchmark,
   });
 
+  // Fetch global MarketHealth (cached, non-blocking) and stamp posture
+  if (!state.marketHealth) {
+    try {
+      state.marketHealth = await fetchAndComputeMarketHealth();
+    } catch {
+      // non-fatal — posture stays undefined
+    }
+  }
+
   if (state.marketContext) {
     const proxy =
       state.marketContext.breadthPctAboveMa200 ??
+      state.marketHealth?.pillars.breadth.inputs["pctAboveMa200"] as number | null ??
       (typeof state.marketContext.indexVsMa200Pct === "number"
         ? Math.max(0, Math.min(1, 0.5 + state.marketContext.indexVsMa200Pct * 2))
         : null);
@@ -802,6 +757,28 @@ export async function stepInterpretAnalyst(state: PipelineState): Promise<void> 
   }
 
   state.analyst = analyst;
+
+  // P2: KI Axis Judgment — update axes in the active lens result with KI sub-scores
+  const activeLensResult = state.lensResults?.quality_compounder;
+  if (activeLensResult && activeLensResult.axes.length > 0) {
+    const updatedAxes = await interpretAxes(
+      activeLensResult.axes,
+      deterministicReport as Readonly<Report>,
+      evidence,
+      {
+        runId: state.runId,
+        artifactsDir: state.rawDir,
+        model: process.env.LLM_MODEL ?? state.modelSummary,
+        enabled: process.env.ENABLE_ANALYST_LLM !== "0",
+      },
+    );
+    // Mutate in-place — lensResults is a local pipeline state object, not shared
+    activeLensResult.axes = updatedAxes;
+    activeLensResult.needsAxisReview = updatedAxes.some(
+      (a) => a.divergence !== null && a.divergence >= THRESHOLDS.axis_divergence_review,
+    );
+  }
+
   if (analyst) {
     state.thesis = {
       thesis_summary: [analyst.thesis, analyst.numbersSay].filter(Boolean).join(" "),
@@ -928,14 +905,6 @@ function extractHistoricalMultipleSeries(
     }
   }
   return out.slice(0, 12);
-}
-
-/** Legacy fallback only; prefer debt_breakdown.net_debt_interest_bearing. */
-function computeNetDebtFromFacts(facts: ProviderFact[]): number | null {
-  const totalDebt = latestNumFact(facts, "total_debt") ?? latestNumFact(facts, "long_term_debt");
-  const cash = latestNumFact(facts, "cash_and_equivalents") ?? latestNumFact(facts, "cash");
-  if (totalDebt === null && cash === null) return null;
-  return (totalDebt ?? 0) - (cash ?? 0);
 }
 
 /** Pick top N blocks by score (as string keys) */
@@ -1364,11 +1333,35 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
             supportStatus: i.sourceSupportStatus ?? "not_checked",
           }))
       : []),
-    chart_data: {
-      financials_quarterly: [],
-      dilution: [],
-      valuation: [],
-    },
+    chart_data: (() => {
+      const chartDs = state.normalizedDataset ?? state.companyDataset;
+      const annualPeriods = chartDs?.annual ?? [];
+      const financials_annual = annualPeriods.map((p) => {
+        const rev = typeof p.revenue === "object" && p.revenue !== null ? (p.revenue as { value: number | null }).value : null;
+        const gp = typeof p.grossProfit === "object" && p.grossProfit !== null ? (p.grossProfit as { value: number | null }).value : null;
+        const ebit = typeof p.ebit === "object" && p.ebit !== null ? (p.ebit as { value: number | null }).value : null;
+        const fcf = typeof p.freeCashflow === "object" && p.freeCashflow !== null ? (p.freeCashflow as { value: number | null }).value : null;
+        const grossMargin = rev && rev > 0 && gp !== null ? gp / rev : null;
+        const operatingMargin = rev && rev > 0 && ebit !== null ? ebit / rev : null;
+        const fcfMargin = rev && rev > 0 && fcf !== null ? fcf / rev : null;
+        return {
+          year: typeof p.periodEnd === "string" ? p.periodEnd.slice(0, 4) : String(p.fiscalYear ?? ""),
+          revenue: rev,
+          grossProfit: gp,
+          ebit,
+          fcf,
+          grossMargin,
+          operatingMargin,
+          fcfMargin,
+        };
+      }).filter((p) => p.year !== "");
+      return {
+        financials_quarterly: [],
+        dilution: [],
+        valuation: [],
+        financials_annual,
+      };
+    })(),
     // Phase A: forensics & business model
     business_model_type: state.businessModelType ?? "",
     piotroski_components: state.forensicsResult?.piotroski?.components ?? {},
@@ -1427,6 +1420,15 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
       : null,
   });
 
+  const activeLens = state.lensResults?.quality_compounder;
+  const axesSnapshot = activeLens?.axes.length
+    ? {
+        growth: activeLens.axes.find((a) => a.axis === "growth")?.combined ?? null,
+        finance: activeLens.axes.find((a) => a.axis === "finance")?.combined ?? null,
+        moat: activeLens.axes.find((a) => a.axis === "moat")?.combined ?? null,
+      }
+    : null;
+
   const scoreHistory = persistScoreHistoryEntry({
     reportId,
     ticker: state.ticker.toUpperCase(),
@@ -1434,6 +1436,9 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
     scoreTotal: Math.round(state.scoreTotal ?? reportData.growth_research_score ?? 0),
     gate: reportData.gate,
     confidence: reportData.confidence,
+    axes: axesSnapshot,
+    safetyStatus: activeLens?.safetyGate.status ?? null,
+    archetype: reportData.category ?? null,
   });
 
   reportData.market_context = state.marketContext
@@ -1446,6 +1451,9 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
         vix_percentile_1y: state.marketContext.vixPercentile1y,
         high_yield_spread: state.marketContext.highYieldSpread,
         yield_curve_10y2y: state.marketContext.yieldCurve10y2y,
+        market_posture_score: state.marketHealth?.score ?? null,
+        market_posture_label: state.marketHealth?.posture ?? null,
+        market_pillar_agreement: state.marketHealth?.pillarAgreement ?? null,
       }
     : null;
   reportData.sector_baseline_used = state.lensResults?.quality_compounder?.sectorBaselineUsed ?? null;

@@ -10,13 +10,25 @@ export type IndicatorFn = (m: DerivedMetrics, d: CompanyDataset, t: Thresholds) 
   inputs: string[];
 };
 
-function scoreByBands(value: number, bands: Array<{ min: number; score: number }>): number {
-  const sorted = bands.slice().sort((a, b) => a.min - b.min);
-  let out = 0;
-  for (const b of sorted) {
-    if (value >= b.min) out = b.score;
+/**
+ * Smooth monotone piecewise-linear interpolation (P1).
+ * points: sorted [{x, y}] where x is input domain, y is score 0..10.
+ * Values below/above the first/last x are clamped to the boundary scores.
+ */
+function scoreLinear(value: number, points: Array<{ x: number; y: number }>): number {
+  if (points.length === 0) return 0;
+  const sorted = points.slice().sort((a, b) => a.x - b.x);
+  if (value <= sorted[0]!.x) return sorted[0]!.y;
+  if (value >= sorted[sorted.length - 1]!.x) return sorted[sorted.length - 1]!.y;
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const lo = sorted[i]!;
+    const hi = sorted[i + 1]!;
+    if (value >= lo.x && value <= hi.x) {
+      const t = (value - lo.x) / (hi.x - lo.x);
+      return lo.y + t * (hi.y - lo.y);
+    }
   }
-  return out;
+  return sorted[sorted.length - 1]!.y;
 }
 
 function missing(reason: string, inputs: string[]): { score: null; reason: string; inputs: string[] } {
@@ -26,40 +38,63 @@ function missing(reason: string, inputs: string[]): { score: null; reason: strin
 export const INDICATOR_FUNCTIONS: Record<string, IndicatorFn> = {
   revenue_growth_quality: (m, _d, t) => {
     if (m.revenueCagr3y === null) return missing("revenueCagr3y fehlt", ["revenueCagr3y"]);
-    const score = scoreByBands(m.revenueCagr3y, [
-      { min: 0, score: 2 },
-      { min: t.growth_revenue_yoy_strong, score: 7 },
-      { min: t.growth_revenue_yoy_excellent, score: 10 },
+    const score = scoreLinear(m.revenueCagr3y, [
+      { x: -0.1, y: 0 }, { x: 0, y: 2 },
+      { x: t.growth_revenue_yoy_strong, y: 7 },
+      { x: t.growth_revenue_yoy_excellent, y: 10 },
     ]);
     return { score, reason: `Umsatz-CAGR3Y ${Math.round(m.revenueCagr3y * 1000) / 10}%`, inputs: ["revenueCagr3y"] };
   },
   revenue_cagr_3y: (m, _d, t) => {
     if (m.revenueCagr3y === null) return missing("revenueCagr3y fehlt", ["revenueCagr3y"]);
-    const score = scoreByBands(m.revenueCagr3y, [
-      { min: 0, score: 1 },
-      { min: t.growth_revenue_cagr3y_strong, score: 7 },
-      { min: t.growth_revenue_cagr3y_excellent, score: 10 },
+    const score = scoreLinear(m.revenueCagr3y, [
+      { x: -0.1, y: 0 }, { x: 0, y: 1 },
+      { x: t.growth_revenue_cagr3y_strong, y: 7 },
+      { x: t.growth_revenue_cagr3y_excellent, y: 10 },
     ]);
     return { score, reason: `CAGR3Y ${Math.round(m.revenueCagr3y * 1000) / 10}%`, inputs: ["revenueCagr3y"] };
   },
-  customer_retention_expansion: (m, _d, t) => {
+  /** P1: NRR/ARR zuerst; revenueAcceleration nur als schwacher Fallback (keine Korrelation mit NRR). */
+  customer_retention_expansion: (m, d, t) => {
+    if (d.saas?.netRevenueRetention !== null && d.saas !== null) {
+      const nrr = d.saas.netRevenueRetention!
+      const score = scoreLinear(nrr, [
+        { x: 0.80, y: 0 }, { x: 0.90, y: 3 }, { x: 1.00, y: 6 }, { x: 1.10, y: 8 }, { x: 1.20, y: 10 },
+      ]);
+      return { score, reason: `NRR ${Math.round(nrr * 1000) / 10}%`, inputs: ["saas.netRevenueRetention"] };
+    }
+    if (d.saas?.arr !== null && d.saas !== null) {
+      return { score: 6, reason: `ARR vorhanden (${d.saas.arr}), kein NRR-Datum`, inputs: ["saas.arr"] };
+    }
     const v = m.revenueAcceleration;
-    if (v === null) return missing("Umsatz-Beschleunigung fehlt", ["revenueAcceleration"]);
-    const score = v > t.growth_acceleration_positive ? 8 : v > 0 ? 6 : 3;
-    return { score, reason: `Beschleunigung ${Math.round(v * 1000) / 10}pp`, inputs: ["revenueAcceleration"] };
+    if (v === null) return missing("Retention-Daten fehlen", ["saas.netRevenueRetention", "saas.arr", "revenueAcceleration"]);
+    const score = v > t.growth_acceleration_positive ? 6 : v > 0 ? 4 : 2;
+    return { score, reason: `Beschleunigung-Proxy ${Math.round(v * 1000) / 10}pp (kein NRR)`, inputs: ["revenueAcceleration"] };
   },
-  tam_share_gain_evidence: (m, _d, t) => {
+  /** P1: Segment-Mix-Shift als primärer Marktanteil-Proxy; revenueAcceleration als Fallback. */
+  tam_share_gain_evidence: (m, d, t) => {
+    const seg = d.segments.find((s) => s.revenueByPeriod.length >= 2);
+    if (seg) {
+      const first = seg.revenueByPeriod.at(0);
+      const last = seg.revenueByPeriod.at(-1);
+      if (first && last && first.value !== null && last.value !== null && first.value > 0) {
+        const segGrowth = (last.value - first.value) / first.value;
+        const score = scoreLinear(segGrowth, [
+          { x: -0.1, y: 1 }, { x: 0.10, y: 5 }, { x: 0.30, y: 7 }, { x: 0.50, y: 9 },
+        ]);
+        return { score, reason: `Segment-Wachstum ${Math.round(segGrowth * 1000) / 10}%`, inputs: ["segments"] };
+      }
+    }
     const v = m.revenueAcceleration;
-    if (v === null) return missing("Marktanteils-Proxy fehlt", ["revenueAcceleration"]);
-    const score = v > t.growth_acceleration_positive ? 7 : 4;
-    return { score, reason: `Marktanteil-Proxy via Beschleunigung ${Math.round(v * 1000) / 10}pp`, inputs: ["revenueAcceleration"] };
+    if (v === null) return missing("TAM-Evidenz-Daten fehlen", ["segments", "revenueAcceleration"]);
+    const score = v > t.growth_acceleration_positive ? 6 : 4;
+    return { score, reason: `TAM-Proxy Beschleunigung ${Math.round(v * 1000) / 10}pp`, inputs: ["revenueAcceleration"] };
   },
 
   gross_margin_quality: (m, _d, t) => {
     if (m.grossMargin === null) return missing("grossMargin fehlt", ["grossMargin"]);
-    const score = scoreByBands(m.grossMargin, [
-      { min: 0, score: 2 },
-      { min: t.gross_margin_strong, score: 8 },
+    const score = scoreLinear(m.grossMargin, [
+      { x: 0, y: 1 }, { x: 0.30, y: 4 }, { x: t.gross_margin_strong, y: 8 }, { x: 0.75, y: 10 },
     ]);
     return { score, reason: `Bruttomarge ${Math.round(m.grossMargin * 1000) / 10}%`, inputs: ["grossMargin"] };
   },
@@ -70,29 +105,72 @@ export const INDICATOR_FUNCTIONS: Record<string, IndicatorFn> = {
   },
   fcf_efficiency: (m, _d, t) => {
     if (m.fcfMargin === null) return missing("fcfMargin fehlt", ["fcfMargin"]);
-    const score = scoreByBands(m.fcfMargin, [
-      { min: -1, score: 1 },
-      { min: 0, score: 5 },
-      { min: t.fcf_margin_strong, score: 9 },
+    const score = scoreLinear(m.fcfMargin, [
+      { x: -0.20, y: 0 }, { x: -0.05, y: 2 }, { x: 0, y: 5 },
+      { x: t.fcf_margin_strong, y: 9 }, { x: 0.25, y: 10 },
     ]);
     return { score, reason: `FCF-Marge ${Math.round(m.fcfMargin * 1000) / 10}%`, inputs: ["fcfMargin"] };
   },
   rule_of_40_x_20: (m, _d, t) => {
     if (m.revenueCagr3y === null || m.fcfMargin === null) return missing("Rule-of-40 Inputs fehlen", ["revenueCagr3y", "fcfMargin"]);
     const rule = m.revenueCagr3y * 100 + m.fcfMargin * 100;
-    const score = scoreByBands(rule, [
-      { min: 0, score: 2 },
-      { min: t.rule_of_40_floor, score: 8 },
-      { min: t.rule_of_x_floor, score: 10 },
+    const score = scoreLinear(rule, [
+      { x: 0, y: 2 }, { x: t.rule_of_40_floor, y: 8 }, { x: t.rule_of_x_floor, y: 10 },
     ]);
     return { score, reason: `Rule ${Math.round(rule * 10) / 10}`, inputs: ["revenueCagr3y", "fcfMargin"] };
   },
 
+  /**
+   * P1: De-korreliertes Moat-Returns-Komposit.
+   * Ersetzt moat_source_evidence + quantitative_moat_trace + business_quality_returns
+   * durch ein einziges de-korreliertes Signal: ROIC-WACC-Spread + roicAdj + roicFadeRate.
+   * Gedeckelt bei moat_quant_returns_cap/10 (z.B. 7/10), damit der KI-Layer (P2) noch Luft hat.
+   */
+  moat_returns_composite: (m, _d, t) => {
+    const inputs: string[] = [];
+    let score = 0;
+
+    // Komponente 1: ROIC-WACC-Spread (Hauptsignal, max 4 Punkte)
+    if (m.roicWaccSpread !== null) {
+      score += scoreLinear(m.roicWaccSpread, [
+        { x: -0.10, y: 0 }, { x: 0, y: 1 }, { x: t.roic_wacc_spread_min + 0.05, y: 2.5 }, { x: 0.15, y: 4 },
+      ]);
+      inputs.push("roicWaccSpread");
+    }
+
+    // Komponente 2: Kapital-adjustierter ROIC (max 2.5 Punkte) — de-korreliert durch F&E-Kapitalisierung
+    if (m.roicAdj !== null) {
+      score += scoreLinear(m.roicAdj, [
+        { x: 0, y: 0 }, { x: t.roce_strong, y: 0.5 }, { x: t.roic_strong, y: 1.5 }, { x: 0.25, y: 2.5 },
+      ]);
+      inputs.push("roicAdj");
+    }
+
+    // Komponente 3: ROIC-Fade-Rate (max 2.5 Punkte) — ist der Vorteil stabil oder erodierend?
+    if (m.roicFadeRate !== null) {
+      score += scoreLinear(m.roicFadeRate, [
+        { x: -0.05, y: 0 }, { x: -0.01, y: 0.5 }, { x: 0.01, y: 1.5 }, { x: 0.05, y: 2.5 },
+      ]);
+      inputs.push("roicFadeRate");
+    }
+
+    if (inputs.length === 0) return missing("Moat-Returns-Inputs fehlen", ["roicWaccSpread", "roicAdj", "roicFadeRate"]);
+
+    // Deckel: rein quantitatives Moat-Signal max moat_quant_returns_cap/10 (P2 KI kann höher)
+    const cap = t.moat_quant_returns_cap / 10;
+    const finalScore = Math.round(Math.min(score, cap) * 10) / 10;
+    const spread = m.roicWaccSpread !== null ? `Spread ${Math.round(m.roicWaccSpread * 1000) / 10}%p` : "";
+    const adj = m.roicAdj !== null ? `, AdjROIC ${Math.round(m.roicAdj * 1000) / 10}%` : "";
+    const fade = m.roicFadeRate !== null ? `, Fade ${Math.round(m.roicFadeRate * 10000) / 100}%p/J` : "";
+    return { score: finalScore, reason: `Moat-Returns: ${spread}${adj}${fade}`, inputs };
+  },
+  /** Backward-compat: für historische Block-Audits und LLM-Prompt-Referenzen. */
   moat_source_evidence: (m, _d, t) => {
     if (m.roicWaccSpread === null) return missing("roicWaccSpread fehlt", ["roicWaccSpread"]);
     const score = m.roicWaccSpread > t.roic_wacc_spread_min ? 8 : 4;
     return { score, reason: `ROIC-WACC ${Math.round(m.roicWaccSpread * 1000) / 10}%p`, inputs: ["roicWaccSpread"] };
   },
+  /** Backward-compat. */
   quantitative_moat_trace: (m, _d, t) => {
     if (m.roic === null) return missing("roic fehlt", ["roic"]);
     const score = m.roic >= t.roic_strong ? 9 : m.roic >= t.roce_strong ? 7 : 4;
@@ -100,9 +178,12 @@ export const INDICATOR_FUNCTIONS: Record<string, IndicatorFn> = {
   },
   durability_trend: (m, _d, t) => {
     if (m.grossMarginStddev === null) return missing("grossMarginStddev fehlt", ["grossMarginStddev"]);
-    const score = m.grossMarginStddev <= t.margin_stability_max_stddev ? 8 : 4;
+    const score = scoreLinear(m.grossMarginStddev, [
+      { x: 0, y: 10 }, { x: t.margin_stability_max_stddev, y: 8 }, { x: 0.10, y: 5 }, { x: 0.20, y: 2 },
+    ]);
     return { score, reason: `GM-Stabilität σ=${Math.round(m.grossMarginStddev * 1000) / 10}%p`, inputs: ["grossMarginStddev"] };
   },
+  /** Backward-compat. */
   business_quality_returns: (m, _d, t) => {
     if (m.roe === null) return missing("roe fehlt", ["roe"]);
     const score = m.roe >= t.roe_strong ? 8 : 5;
@@ -156,7 +237,15 @@ export const INDICATOR_FUNCTIONS: Record<string, IndicatorFn> = {
     const score = m.revisionsBalance >= t.revisions_positive ? 8 : m.revisionsBalance > 0 ? 6 : 3;
     return { score, reason: `Revisionen ${m.revisionsBalance}`, inputs: ["revisionsBalance"] };
   },
-  news_sentiment_quality: (m, _d, t) => {
+  news_sentiment_quality: (m, d, t) => {
+    const sentScore = d.newsSentiment.score;
+    if (sentScore !== null) {
+      // Finnhub score: -1 (bearish) to +1 (bullish), normalized: >0.2=bull, <-0.2=bear
+      const score = sentScore >= 0.2 ? 8 : sentScore >= 0 ? 6 : sentScore >= -0.2 ? 4 : 2;
+      const pct = sentScore >= 0 ? `+${(sentScore * 100).toFixed(0)}` : `${(sentScore * 100).toFixed(0)}`;
+      const buzz = d.newsSentiment.articlesInLastWeek !== null ? ` · ${d.newsSentiment.articlesInLastWeek} Artikel/Woche` : "";
+      return { score, reason: `News-Sentiment ${pct}%${buzz}`, inputs: ["newsSentiment.score"] };
+    }
     if (m.beatStreak === null) return missing("beatStreak fehlt", ["beatStreak"]);
     const score = m.beatStreak >= t.beat_streak_strong ? 8 : m.beatStreak > 0 ? 6 : 3;
     return { score, reason: `Beat-Serie ${m.beatStreak}`, inputs: ["beatStreak"] };

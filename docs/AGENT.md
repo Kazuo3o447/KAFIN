@@ -44,6 +44,7 @@ Fachliche Grundlage: [research.md](../research.md), insbesondere §7 (Evidenzkla
 - Jeder skalare Fakt trägt Provenance (`source`, `url`, `klass`, `asOf`, `stale`).
 - Capability-Laufdiagnostik wird pro Run persistiert (`fetch_statuses`) inkl. Provider-Reihenfolge, Retries und Fehlermeldungen.
 - Retries mit Backoff sind Pflicht vor finalem `fetch_failed`/`rate_limited`-Status.
+- **`news_sentiment`-Capability (Finnhub):** `NewsSentimentSchema` (`score`, `bullishPct`, `bearishPct`, `buzz`, `articlesInLastWeek`, `provenance`). Rubric-Funktion `news_sentiment_quality` wertet primär `score` aus (±0.2-Bänder → 8/6/4/2 Punkte); Fallback auf `beatStreak` wenn kein Sentiment vorhanden. Abfrage gegen `GET /news/sentiment?symbol={ticker}&token={key}`.
 - **Verbindlich:** Kein LLM erzeugt Kennzahlen, Scores, Fair Values oder Schwellenentscheidungen im Datenpfad. LLM ist dort nicht autorisiert, Zahlen zu fabrizieren.
 
 ### 1.2 Kanonische Scoring-Taxonomie

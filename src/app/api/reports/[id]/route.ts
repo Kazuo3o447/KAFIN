@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { NextResponse } from "next/server";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db, schema } from "@/lib/storage/db";
 
 export const runtime = "nodejs";

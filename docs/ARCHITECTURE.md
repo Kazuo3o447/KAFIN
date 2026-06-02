@@ -28,7 +28,13 @@ src/
     reports/[id]/page.tsx           # Dense terminal report UI
     api/
       runs/                         # run lifecycle + SSE
-      reports/                      # report read/export
+      reports/
+        [id]/
+          chat/route.ts             # POST SSE-Chat-Endpunkt (DE-Kontext aus Report-JSON)
+          route.ts                  # report read/export
+      market/
+        health/route.ts             # GET MarketHealth JSON (cached TTL 30/60 min)
+        analyze/route.ts            # POST SSE KI-Marktanalyse (Regime-Brief + Chat)
       settings/                     # provider/settings + test-llm
       watchlist/
       ollama/models/                # provider-agnostic model discovery endpoint
@@ -41,27 +47,40 @@ src/
     ExportButtons.tsx
     PinButton.tsx
     SourceList.tsx
+    ChatPanel.tsx          # SSE-Chat-Client für /api/reports/[id]/chat
+    MarketChatPanel.tsx    # SSE-Chat-Client für /api/market/analyze (Regime-Brief + Chat)
+    RunStepper.tsx         # Terminal-Stepper für den Research-Ladebildschirm
+    RunFindingsPanel.tsx   # "Bisher gefunden"-Seitenleiste (progressiv)
+    charts/
+      FinancialsChart.tsx  # recharts AreaChart/BarChart
+      ScoreTrendChart.tsx  # recharts AreaChart Sparkline
   lib/
     orchestrator/
-      pipeline.ts
+      pipeline.ts        # nutzt step-manifest für Step-Metadaten
       steps.ts
-      events.ts
+      events.ts          # RunEventName erweitert: "meta" + StepDoneEvent.summary
+      step-manifest.ts   # kanonische Step-Liste (14 Steps, 3 Phasen, key/label/pct)
     providers/
       collect.ts
-      types.ts
+      types.ts           # Capability-Union inkl. "market_quotes"
       index.ts
       yahoo.ts
       edgar.ts
       fmp.ts
       alphavantage.ts
       rss.ts
-      finnhub.ts
-      fred.ts
+      finnhub.ts           # Capability: news_sentiment (Sentiment-Score + Buzz)
+      fred.ts              # 6 FRED-Serien + z-Score-Helfer (DGS10/DFII10/BAMLC0A0CM neu)
+      market-quotes.ts     # Yahoo-basierte Quotes für 15 Assets (6 Kategorien)
       symbol-resolution.ts
+    market/
+      health.ts            # MarketHealth-Modul: 3-Säulen, Score 0–100, Cache TTL 30/60 min
     scoring/
       weights.ts
-      engine.ts
-      rubric-fn.ts
+      engine.ts          # pickArchetype() aus Achsen-Profil (P3)
+      rubric-fn.ts       # scoreLinear(), moat_returns_composite (P1)
+      axes.ts            # Drei-Achsen-Modell Growth·Finance·Moat (P1)
+      safety-gate.ts     # Hard-Veto unabhängig vom Score (P1)
       lenses.ts
       gate.ts
       timing.ts
@@ -77,16 +96,17 @@ src/
       conflict-detector.ts
       assumptions.ts
       output-sanitizer.ts
+      thresholds.ts        # inkl. market_vix_panic, market_move_stress, market_hy_zScore_stress
     analyst/
-      interpret.ts
-      guardrails.ts
+      interpret.ts       # judgeAxis() + interpretAxes() KI-Blending (P2)
+      guardrails.ts      # KiAxisJudgment, verifyKiAxisJudgment() (P2)
       evidence.ts
     llm/
       config.ts
       ollama.ts
       deepseek.ts
       groq.ts
-      prompts.ts
+      prompts.ts         # KI_AXIS_SYSTEM/USER, Mauboussin-Moat-Prompt (P2)
       repair.ts
     storage/
       db.ts
@@ -125,15 +145,24 @@ Orchestrator: [../src/lib/orchestrator/pipeline.ts](../src/lib/orchestrator/pipe
 ### Phase 3: Nachverarbeitung
 
 7. score: stepComputeScoreAndGate
-8. timing: stepComputeTimingAxis
+8. timing: stepComputeTimingAxis — ruft auch `fetchAndComputeMarketHealth()` auf (gecacht, non-blocking); befüllt `state.marketHealth`
 9. peer: stepComputePeerPercentiles
 10. fair_value: stepComputeFairValue
 11. trade_setup: stepComputeTradeSetup
 12. analyst: stepInterpretAnalyst (optional)
 13. verdict: stepGenerateVerdict
-14. persist: stepPersist
+14. persist: stepPersist — stempelt `market_posture_score`, `market_posture_label`, `market_pillar_agreement` in `report.market_context`
 
-Progress, Step-Start/Done, Error und Done werden ueber SSE emittiert.
+Progress, Step-Start/Done, Meta, Error und Done werden ueber SSE emittiert.
+
+**SSE-Event-Typen (vollständig):**
+- `log` — Textlog mit Level
+- `progress` — `{ pct: number }` (immer ≤ 99 bis `done`)
+- `step:start` — `{ step, label }`
+- `step:done` — `{ step, ms, ok, summary? }` (`ok=false` ist non-fatal)
+- `meta` — `{ ticker, companyName?, exchange?, currency?, sources? }` (nach normalize)
+- `error` — `{ msg }` (hard failure)
+- `done` — `{ reportId, gate, scoreTotal }` (triggert Redirect)
 
 ---
 
@@ -184,12 +213,68 @@ Report-UI:
 - [../src/app/reports/[id]/page.tsx](../src/app/reports/[id]/page.tsx)
 - terminal-dichte Darstellung mit Setup/Regime/Kennzahlen/Charts/Ownership/Advisor
 - Kerninfos ohne verpflichtende Akkordeons
+- Zone 4d: `<ChatPanel>` — interaktiver DE-Chat zum geladenen Report (SSE-Streaming)
+
+Markets-UI:
+- [../src/app/markets/page.tsx](../src/app/markets/page.tsx) — Marktgesundheits-Dashboard
+  - Kopfzeile: Posture-Label + Score/100 + Säulen-Zähler + as-of-Stamp + Refresh
+  - Quotes-Board: 15 Asset-Kacheln in 6 Kategorien (Indizes / Zinsen / Vol / Rohstoffe / FX / Krypto)
+  - Delta-Farbgebung kontextabhängig: neutral (kein Gut/Schlecht) für Rates/Vol/Credit
+  - 3-Säulen-Karten mit Subscore-Balken (Breadth / Volatilität / Credit)
+  - Zins-/Duration-Block + Faktor-Regime-Block
+  - Divergenz-Banner (amber) — getriggert von `health.divergences`
+  - `<MarketChatPanel>` kollabierbar — Regime-Brief-Button beim ersten Aufruf, danach Chat
+  - KI-Kurzanalyse wenn `health.summary !== null` (aus Cache nach erstem analyze-Aufruf)
+
+Run-/Loading-UI:
+- [../src/app/run/[ticker]/page.tsx](../src/app/run/[ticker]/page.tsx) — 3-Bereich Research-Ladebildschirm
+  - Kopfzeile: Ticker (mono) · Elapsed mm:ss · %
+  - Haupt-Grid (xl: 2-spaltig): `<RunStepper>` + `<RunFindingsPanel>`
+  - Fußzeile: 3px Progress-Bar + Log-Toggle
+  - Fortschritt capped ≤ 99% bis `done`-Event; dann 1,2s Delay → Redirect
 
 ---
 
-## 7. Datenbank (Kurzfassung)
+## 7. MarketHealth-Modul
 
-Tabellen:
+Datei: [../src/lib/market/health.ts](../src/lib/market/health.ts)
+
+### 3-Säulen-Methodik
+
+| Säule | Gewicht | Signale |
+|---|---:|---|
+| Volatilität | 30% | VIX-Regime + MOVE-Stress |
+| Credit | 35% | HY-Spread + z-Score 1y/3y |
+| Breadth | 35% | %>MA200 (aus FRED-Proxy oder Pipeline-Kontext) |
+
+Score 0–100 → `PostureLabel`: `risk_off` (<35), `neutral` (35–65), `risk_on` (>65).
+
+`pillarAgreement` (0–3): Anzahl Säulen, die mit dem Gesamt-Posture übereinstimmen.
+
+### Rates-Modifier (±5 Punkte)
+- Kurveninversion (10Y–2Y < 0): −5
+- Positiver Real-Yield > 2,5%: −5
+
+### Divergenz-Erkennung
+- VIX hoch + Kurs-Breadth stark → "Volatilität vs. Breadth divergent"
+- Credit stress + VIX niedrig → "Credit vs. VIX divergent"
+
+### Cache
+- TTL 30 min (08:00–16:00 Ortszeit) / 60 min (außerhalb)
+- `?refresh=1` an `/api/market/health` invalidiert manuell
+
+### Endpoints
+- `GET /api/market/health` — JSON (cached)
+- `POST /api/market/analyze` — SSE-Streaming-LLM, Regime-Brief oder Chat
+
+### Pipeline-Anbindung
+- `stepComputeTimingAxis` fetcht MarketHealth (non-blocking), befüllt `state.marketHealth`
+- `stepPersist` stempelt `market_posture_score`, `market_posture_label`, `market_pillar_agreement` in `report.market_context`
+- `MarketContextSummarySchema` enthält alle drei neuen Felder
+
+---
+
+## 8. Datenbank (Kurzfassung)
 - runs
 - reports
 - watchlist
@@ -203,7 +288,7 @@ Drizzle-Schema: [../src/lib/storage/schema.ts](../src/lib/storage/schema.ts)
 
 ---
 
-## 8. Events und Live-Logs
+## 9. Events und Live-Logs
 
 Run-Events:
 - log
@@ -221,7 +306,7 @@ Event-Bus:
 
 ---
 
-## 9. Test-Strategie
+## 10. Test-Strategie
 
 Unit (Vitest):
 - deterministische Scoring-/Research-Module
@@ -233,7 +318,7 @@ E2E (Playwright):
 
 ---
 
-## 10. Betriebsregeln
+## 11. Betriebsregeln
 
 - Keine erfundenen Zahlen im Produktivpfad.
 - Kein Ueberschreiben historischer Reports (immutable runs).

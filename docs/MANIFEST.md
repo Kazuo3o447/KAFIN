@@ -27,7 +27,7 @@
 | Sprache | TypeScript (strict) | gemeinsame Sprache FE+BE, Typsicherheit für LLM-Schemas |
 | Framework | **Next.js 14 (App Router)** Fullstack | API-Routes + Server Actions + React 18, ein Repo, ein Container |
 | Styling | TailwindCSS + CSS-Vars (Dark-Default) | 1:1 portierbar aus `1index.html` |
-| Charts | `chart.js` + `react-chartjs-2` | identisch zum Pilot |
+| Charts | `chart.js` + `react-chartjs-2` (Legacy) + **`recharts`** | recharts für FinancialsChart + ScoreTrendChart; beide Libs aktiv |
 | Icons | `@fortawesome/react-fontawesome` (Free) | identisch zum Pilot |
 | ORM | **Drizzle ORM** (SQLite-Dialekt, Postgres-ready) | typesafe, migrationsfähig, Pfad zu pgvector offen |
 | Datenbank (MVP) | **SQLite** (`data/research.db`) via `better-sqlite3` | lokal, zero-config |
@@ -73,6 +73,7 @@
 | RSS Feeds (IR-Seiten, SEC, Finanzen) | keine | News, Katalysatoren | C |
 | Financial Modeling Prep (FMP) | API-Key (`.env`) | Fundamentaldaten, Ratios, Historie | B |
 | Alpha Vantage | API-Key (`.env`) | Backup-Fundamentaldaten, FX | B |
+| Finnhub | API-Key (`.env`, `FINNHUB_API_KEY`) | News-Sentiment-Score + Buzz (`news_sentiment`-Capability) | B |
 
 **Adapter-Pattern Pflicht:** Jede Quelle implementiert `interface DataProvider`. Neue Quellen werden hier eingetragen, bevor Adapter geschrieben werden.
 

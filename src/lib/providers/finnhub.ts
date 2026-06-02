@@ -63,7 +63,7 @@ function makeResult(
 
 export const finnhubProviderV2: DataProviderV2 = {
   name: "finnhub",
-  capabilities: ["estimates", "earnings_history", "insider", "short_interest", "analyst", "institutional"],
+  capabilities: ["estimates", "earnings_history", "insider", "short_interest", "analyst", "institutional", "news_sentiment"],
   available: () => Boolean(finnhubKey()),
   priorityByCapability: {
     estimates: 1,
@@ -72,6 +72,7 @@ export const finnhubProviderV2: DataProviderV2 = {
     short_interest: 2,
     analyst: 2,
     institutional: 2,
+    news_sentiment: 1,
   },
   async fetch(cap, ctx: ProviderContext): Promise<ProviderFetchResultV2> {
     const start = Date.now();
@@ -271,6 +272,28 @@ export const finnhubProviderV2: DataProviderV2 = {
             asOf: null,
           },
           "finnhub_ownership.json",
+          raw,
+        );
+      }
+
+      if (cap === "news_sentiment") {
+        interface FinnhubSentimentResponse {
+          buzz?: { articlesInLastWeek?: number; buzz?: number; weeklyAverage?: number };
+          sentiment?: { bearishPct?: number; bullishPct?: number; score?: number };
+        }
+        const raw = await fetchJson<FinnhubSentimentResponse>(buildUrl("/news/sentiment", ctx.ticker, key));
+        const score = typeof raw.sentiment?.score === "number" ? raw.sentiment.score : null;
+        const bullishPct = typeof raw.sentiment?.bullishPct === "number" ? raw.sentiment.bullishPct : null;
+        const bearishPct = typeof raw.sentiment?.bearishPct === "number" ? raw.sentiment.bearishPct : null;
+        const articlesInLastWeek = typeof raw.buzz?.articlesInLastWeek === "number" ? raw.buzz.articlesInLastWeek : null;
+        const buzz = typeof raw.buzz?.buzz === "number" ? raw.buzz.buzz : null;
+
+        return makeResult(
+          cap,
+          start,
+          score !== null || bullishPct !== null,
+          { score, bullishPct, bearishPct, articlesInLastWeek, buzz },
+          "finnhub_news_sentiment.json",
           raw,
         );
       }

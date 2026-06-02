@@ -80,7 +80,9 @@ export type Capability =
   | "analyst"
   | "segments"
   | "macro"
-  | "symbol_resolution";
+  | "market_quotes"
+  | "symbol_resolution"
+  | "news_sentiment";
 
 export type MissingValueStatus =
   | "available"

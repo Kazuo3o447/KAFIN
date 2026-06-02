@@ -12,6 +12,8 @@ import { LENS_PROFILES, type Lens } from "@/lib/scoring/lenses";
 import { routeSector, type RubricClass } from "@/lib/scoring/sector-router";
 import { summarizeSectorBaseline, type SectorBaselineUsed } from "@/lib/research/sector-baselines";
 import { deriveComboSignals, deriveConfidenceScore, type ComboSignal } from "@/lib/research/combo-signals";
+import { computeAxes, needsAxisReview, type AxisResult } from "@/lib/scoring/axes";
+import { evaluateSafetyGate, type SafetyGateResult } from "@/lib/scoring/safety-gate";
 import type { CompanyDataset, MarketContext } from "@/lib/schemas/dataset";
 import type { BlockKey } from "@/lib/scoring/weights";
 
@@ -49,13 +51,44 @@ export interface LensScoreResult {
   sectorBaselineUsed: SectorBaselineUsed;
   comboFlags: ComboSignal[];
   confidenceScore: number;
+  /** P1: Drei-Achsen-Ergebnisse (Growth · Finance · Moat). KI-Layer in P1 null. */
+  axes: AxisResult[];
+  /** P1: Ergebnis des Safety-Gate (hard-veto unabhängig vom Score). */
+  safetyGate: SafetyGateResult;
+  /** P1: true wenn mind. eine Achse >axis_divergence_review Divergenz hat (in P1 immer false). */
+  needsAxisReview: boolean;
 }
 
-function pickCategory(score: number, gate: "Green" | "Yellow" | "Red", regime: ValuationRegime): Category {
+function pickArchetype(
+  score: number,
+  gate: "Green" | "Yellow" | "Red",
+  regime: ValuationRegime,
+  axes: AxisResult[],
+): Category {
   if (gate === "Red") return "Too Hard";
-  if (score >= 82 && regime !== "cyclical") return "Rocket";
+
+  // Derive axis scores (combined preferred, fallback quant)
+  const getAxis = (key: string): number | null => {
+    const a = axes.find((x) => x.axis === key);
+    return a?.combined ?? a?.quant.value ?? null;
+  };
+  const growth = getAxis("growth");
+  const finance = getAxis("finance");
+  const moat = getAxis("moat");
+
+  // Compounding Engine: all three axes strong
+  if (score >= 78 && (growth ?? 0) >= 65 && (finance ?? 0) >= 65 && (moat ?? 0) >= 55 && regime !== "cyclical") {
+    return "Rocket"; // maps to "Compounding Engine" display label (Category enum unchanged)
+  }
+
+  // Quality Growth: solid across the board
   if (score >= 68) return "Quality Growth";
-  if (score >= 55) return "Transitional";
+
+  // Transitional: at least one growth or moat signal
+  if (score >= 55) {
+    return "Transitional";
+  }
+
   return "Broken Growth";
 }
 
@@ -150,10 +183,13 @@ export function scoreCompany(dataset: CompanyDataset, lens: Lens, marketContext?
       sectorBaselineUsed,
       comboFlags,
       confidenceScore: 0,
+      axes: [],
+      safetyGate: { status: "ok", reasons: [] },
+      needsAxisReview: false,
     };
   }
 
-  const m = deriveMetricsFromDataset(dataset, marketContext);
+  const m = deriveMetricsFromDataset(dataset);
   const estimatesSignals = computeEstimatesSignals(dataset);
   const ownership = computeOwnershipSignals(dataset);
   const inflection = computeInflectionFlags(dataset, estimatesSignals.revisionsBalance, estimatesSignals.sue);
@@ -180,6 +216,7 @@ export function scoreCompany(dataset: CompanyDataset, lens: Lens, marketContext?
   }
 
   const score = computeScore(blocks);
+  const axes = computeAxes(score.blocks);
   const blockBreakdown = Object.fromEntries(
     (Object.keys(score.blocks) as BlockKey[]).map((k) => [k, Math.round(score.blocks[k].weighted * 100) / 100]),
   ) as Record<BlockKey, number>;
@@ -196,15 +233,17 @@ export function scoreCompany(dataset: CompanyDataset, lens: Lens, marketContext?
     hardBlockers.push("Hohes Short-Interesse ohne positives Setup");
   }
 
+  const safetyGate = evaluateSafetyGate(m, hardBlockers);
+
   const gate = computeGate({
     scoreTotal: score.total,
     coverage: score.coverage,
     confidence: score.coverage >= THRESHOLDS.coverage_floor ? "high" : "medium",
-    category: pickCategory(score.total, "Yellow", regime),
+    category: pickArchetype(score.total, "Yellow", regime, axes),
     hardBlockers,
   });
 
-  const category = pickCategory(score.total, gate, regime);
+  const category = pickArchetype(score.total, gate, regime, axes);
   const comboFlags = deriveComboSignals({
     key_metrics: m as any,
     category,
@@ -255,5 +294,8 @@ export function scoreCompany(dataset: CompanyDataset, lens: Lens, marketContext?
     sectorBaselineUsed,
     comboFlags,
     confidenceScore,
+    axes,
+    safetyGate,
+    needsAxisReview: needsAxisReview(axes),
   };
 }

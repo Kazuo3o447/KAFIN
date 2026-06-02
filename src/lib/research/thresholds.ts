@@ -237,6 +237,16 @@ export const THRESHOLDS = {
   regime_breadth_risk_off_max: 0.4,
 
   // ---------------------------------------------------------------------
+  // Markets page — Marktgesundheits-Posture (research.md §markets)
+  // ---------------------------------------------------------------------
+  /** VIX ≥ 30 = Panik-Schwelle für Vol-Säule */
+  market_vix_panic: 30,
+  /** MOVE ≥ 120 = Zinsvol-Stress (proprietary ICE; ggf. Proxy) */
+  market_move_stress: 120,
+  /** HY-Spread z-Score ≥ +2 = Credit-Stress */
+  market_hy_zScore_stress: 2.0,
+
+  // ---------------------------------------------------------------------
   // Phase 3: Quadrant action table thresholds
   // ---------------------------------------------------------------------
   quadrant_fundamental_high_min: 70,
@@ -282,4 +292,14 @@ export const THRESHOLDS = {
       meiden: "strict_avoid",
     },
   } as const,
+
+  // ---------------------------------------------------------------------
+  // P1: Three-axis model
+  // ---------------------------------------------------------------------
+  axis_ki_weight_max_growth: 0.30,
+  axis_ki_weight_max_finance: 0.20,
+  axis_ki_weight_max_moat: 0.60,
+  axis_divergence_review: 25,        // |quant - ki| >= 25 → needs_human_review
+  moat_quant_returns_cap: 70,        // cap for returns-evidence composite (0–100 scale)
+  rnd_capitalization_life_years: 5,  // Mauboussin: F&E Nutzungsdauer für roicAdj
 } as const;

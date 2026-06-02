@@ -5,10 +5,15 @@ import {
   SUMMARY_USER,
   REDTEAM_SYSTEM,
   REDTEAM_USER,
+  KI_AXIS_SYSTEM,
+  KI_AXIS_USER,
 } from "@/lib/llm/prompts";
 import type { Report } from "@/lib/schemas/report";
 import type { AnalystEvidencePackage } from "@/lib/analyst/evidence";
-import { applyAnalystGuardrails } from "@/lib/analyst/guardrails";
+import { applyAnalystGuardrails, sanitizeKiAxisJudgment, verifyKiAxisJudgment } from "@/lib/analyst/guardrails";
+import type { KiAxisJudgment } from "@/lib/analyst/guardrails";
+import type { AxisKey, AxisResult } from "@/lib/scoring/axes";
+import { THRESHOLDS } from "@/lib/research/thresholds";
 
 export interface AnalystBlock {
   isInterpretation: true;
@@ -165,4 +170,124 @@ export async function interpretReport(
   } catch {
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// P2: KI Axis Judgment (Mauboussin moat + Bull/Bear debate)
+// ---------------------------------------------------------------------------
+
+/** Options forwarded to judgeAxis / interpretAxes */
+export interface AxisJudgeOptions {
+  runId: string;
+  model?: string;
+  artifactsDir?: string;
+  enabled?: boolean;
+}
+
+/**
+ * Calls the LLM to produce a KiAxisJudgment for a single axis.
+ * Returns null if KI is disabled, model is missing, or LLM fails.
+ */
+export async function judgeAxis(
+  axis: AxisKey,
+  quant: AxisResult["quant"],
+  report: Readonly<Report>,
+  evidence: AnalystEvidencePackage,
+  opts: AxisJudgeOptions,
+): Promise<KiAxisJudgment | null> {
+  const enabled = opts.enabled ?? process.env.ENABLE_ANALYST_LLM !== "0";
+  if (!enabled) return null;
+  const model = opts.model ?? process.env.LLM_MODEL ?? process.env.ANALYST_MODEL ?? "";
+  if (!model) return null;
+
+  const deterministicSummary = JSON.stringify(evidence.deterministicSignals ?? {});
+  const evidenceContext = evidence.filingsAndNews
+    .slice(0, 6)
+    .map((f, i) => `[${i + 1}] (${f.asOf}) ${f.title}: ${f.summary.slice(0, 300)}`)
+    .join("\n");
+
+  try {
+    const result = await chatJSON<unknown>({
+      runId: opts.runId,
+      step: `ki_axis_${axis}`,
+      model,
+      system: KI_AXIS_SYSTEM,
+      user: KI_AXIS_USER(report.ticker, axis, quant.value, quant.coverage, deterministicSummary, evidenceContext),
+      temperature: 0.2,
+      artifactsDir: opts.artifactsDir,
+    });
+
+    const raw = result.data && typeof result.data === "object" ? result.data as Record<string, unknown> : {};
+    const judgment = sanitizeKiAxisJudgment({ ...raw, axis });
+    if (!judgment) return null;
+
+    // Verifier: log hit-rate but do not block (used for observability)
+    const verifier = verifyKiAxisJudgment(report, judgment);
+    // Penalise confidence if grounding is weak
+    if (verifier.totalClaims > 0 && verifier.hitRate < 0.5) {
+      judgment.confidence = judgment.confidence * verifier.hitRate;
+    }
+
+    return judgment;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Runs KI axis judgment for all axes and merges results into the AxisResult array.
+ * Mutates a copy of each AxisResult to populate the .ki field and recompute .combined.
+ */
+export async function interpretAxes(
+  axes: AxisResult[],
+  report: Readonly<Report>,
+  evidence: AnalystEvidencePackage,
+  opts: AxisJudgeOptions,
+): Promise<AxisResult[]> {
+  const updated: AxisResult[] = [];
+
+  const kiWeightMaxByAxis: Record<AxisKey, number> = {
+    growth: THRESHOLDS.axis_ki_weight_max_growth,
+    finance: THRESHOLDS.axis_ki_weight_max_finance,
+    moat: THRESHOLDS.axis_ki_weight_max_moat,
+  };
+
+  for (const axisResult of axes) {
+    const judgment = await judgeAxis(axisResult.axis, axisResult.quant, report, evidence, opts);
+
+    if (!judgment || axisResult.quant.value === null) {
+      updated.push(axisResult);
+      continue;
+    }
+
+    const kiWeightMax = kiWeightMaxByAxis[axisResult.axis];
+    // Scale effective weight by confidence (evidence groundedness already folded in above)
+    const kiWeightEffective = kiWeightMax * judgment.confidence;
+
+    const kiSubScore: AxisResult["ki"] = {
+      value: judgment.ki_subscore,
+      coverage: judgment.evidence.length > 0 ? Math.min(1, judgment.evidence.length / 3) : 0,
+      inputs: judgment.evidence.map((e) => e.sourceRef),
+      source: "ki",
+    };
+
+    const combined =
+      (1 - kiWeightEffective) * axisResult.quant.value + kiWeightEffective * judgment.ki_subscore;
+
+    const divergence =
+      axisResult.quant.value !== null
+        ? Math.abs(judgment.ki_subscore - axisResult.quant.value)
+        : null;
+
+    updated.push({
+      ...axisResult,
+      ki: kiSubScore,
+      combined,
+      divergence,
+      kiWeightEffective,
+      rating: judgment.rating,
+    });
+  }
+
+  return updated;
 }

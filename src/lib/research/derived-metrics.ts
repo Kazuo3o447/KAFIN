@@ -8,7 +8,7 @@ import {
 } from "./forensics";
 import { THRESHOLDS } from "./thresholds";
 import { computeReverseDCF, type ReverseDCFResult } from "./reverse-dcf";
-import type { CompanyDataset, FinancialPeriod, MarketContext } from "@/lib/schemas/dataset";
+import type { CompanyDataset, FinancialPeriod } from "@/lib/schemas/dataset";
 
 export interface DerivedMetricsResult {
   metrics: Partial<KeyMetrics>;
@@ -47,6 +47,8 @@ export interface DerivedMetrics {
   roe: number | null;
   wacc: number | null;
   roicWaccSpread: number | null;
+  roicAdj: number | null;       // ROIC mit kapitalisiertem F&E (Mauboussin)
+  roicFadeRate: number | null;  // Jährliche ROIC-Änderung über die Historienserie
   roiic: number | null;
   cashConversion: number | null;
   rAndDIntensity: number | null;
@@ -60,7 +62,14 @@ export interface DerivedMetrics {
   evSales: number | null;
   evGrossProfit: number | null;
   pe: number | null;
+  /** Forward PEG = NTM P/E ÷ fwd EPS-Wachstum. Null wenn kein positiver Gewinn. */
   peg: number | null;
+  /** PEG Fallback Level 2: EV/EBIT ÷ EBIT-CAGR-fwd */
+  evEbitToGrowth: number | null;
+  /** PEG Fallback Level 4: PSG = EV/Sales ÷ Rev-CAGR-fwd */
+  evSalesToGrowth: number | null;
+  /** Welche PEG-Leiter-Stufe verwendet wurde (1–4); null wenn keine anwendbar */
+  pegFallbackLevel: 1 | 2 | 3 | 4 | null;
   pfcf: number | null;
   fcfYield: number | null;
   dividendYield: number | null;
@@ -77,6 +86,10 @@ export interface DerivedMetrics {
   upsideToTargetPct: number | null;
   guidanceTrend: "raised" | "maintained" | "lowered" | null;
   institutionalTrend: "accumulating" | "distributing" | "flat" | null;
+  /** Short Interest % of Float (vom ShortInterest-Dataset) */
+  shortInterestPctFloat: number | null;
+  /** Days to cover / Short Ratio */
+  daysToCover: number | null;
 }
 
 type MetricKey = keyof KeyMetrics;
@@ -112,6 +125,13 @@ const DERIVED_KEYS: MetricKey[] = [
   "gross_margin_stddev",
   "operating_margin_stddev",
   "fcf_margin_stddev",
+  // PEG Fallback Leiter
+  "ev_ebit_to_growth",
+  "ev_sales_to_growth",
+  "peg_fallback_level",
+  // Short Interest
+  "short_interest_pct_float",
+  "days_to_cover",
 ];
 
 function toNumber(value: unknown): number | null {
@@ -246,6 +266,34 @@ function firstDatasetNumber(facts: ProviderFact[], fieldIncludes: string[], keys
     }
   }
   return null;
+}
+
+/**
+ * Berechnet WACC via CAPM-Cost-of-Equity + after-tax-Cost-of-Debt gewichtet
+ * nach Netto-Schuldenanteil am Enterprise Value.
+ * Beide Ableitungspfade (deriveKeyMetrics und deriveMetricsFromDataset) nutzen
+ * diese Funktion — damit sind angezeigte und gescorte WACC-Werte konsistent.
+ *
+ * @param beta    Equity-Beta; null → Fallback 1.0 (dokumentiert, kein stiller rf+erp)
+ * @param netDebt Nettoverschuldung; null oder ≤0 → debtWeight = 0
+ * @param ev      Enterprise Value; null oder ≤0 → debtWeight = 0
+ */
+export function computeWACC(
+  beta: number | null,
+  netDebt: number | null,
+  ev: number | null,
+): { wacc: number; fallbackBeta: boolean; debtWeight: number } {
+  const fallbackBeta = beta === null;
+  const effectiveBeta = fallbackBeta ? 1.0 : beta;
+  const rf = THRESHOLDS.wacc_risk_free_rate;
+  const erp = THRESHOLDS.wacc_equity_risk_premium;
+  const costOfEquity = rf + effectiveBeta * erp;
+  const debtWeight =
+    ev !== null && ev > 0 && netDebt !== null && netDebt > 0 ? netDebt / ev : 0;
+  const equityWeight = 1 - debtWeight;
+  const afterTaxCostOfDebt = THRESHOLDS.wacc_cost_of_debt * (1 - THRESHOLDS.wacc_tax_rate);
+  const wacc = equityWeight * costOfEquity + debtWeight * afterTaxCostOfDebt;
+  return { wacc, fallbackBeta, debtWeight };
 }
 
 export function deriveKeyMetrics(ticker: string, runDate: string, facts: ProviderFact[]): DerivedMetricsResult {
@@ -401,27 +449,24 @@ export function deriveKeyMetrics(ticker: string, runDate: string, facts: Provide
   }
 
   // -----------------------------------------------------------------------
-  // Phase A: WACC approximation + ROIC–WACC spread
+  // Phase A: WACC via gemeinsamer computeWACC (CAPM + Debt-Blend)
   // -----------------------------------------------------------------------
-  const betaForWacc = metrics.beta ?? (beta !== null ? beta : 1.0);
-  const rf = THRESHOLDS.wacc_risk_free_rate;
-  const erp = THRESHOLDS.wacc_equity_risk_premium;
-  const costOfEquity = rf + betaForWacc * erp;
-
-  // Debt weight: rough proxy — net_debt / enterprise_value
+  const betaForWacc = metrics.beta ?? beta; // null → computeWACC nutzt Fallback 1.0
   const ev = enterpriseValue ?? latestNumber(facts, "enterprise_value");
   const netDebt = totalDebt !== null && totalCash !== null ? totalDebt - totalCash : null;
-  const debtWeight = ev !== null && ev > 0 && netDebt !== null && netDebt > 0 ? netDebt / ev : 0;
-  const equityWeight = 1 - debtWeight;
-  const afterTaxCostOfDebt = THRESHOLDS.wacc_cost_of_debt * (1 - THRESHOLDS.wacc_tax_rate);
-  const wacc = equityWeight * costOfEquity + debtWeight * afterTaxCostOfDebt;
-  add("wacc", wacc, "CAPM + debt blend: equity_weight*cost_equity + debt_weight*after_tax_cost_debt", {
-    betaForWacc, rf, erp, costOfEquity, debtWeight, equityWeight, afterTaxCostOfDebt,
-  });
+  const waccResult = computeWACC(betaForWacc, netDebt, ev);
+  add(
+    "wacc",
+    waccResult.wacc,
+    waccResult.fallbackBeta
+      ? "CAPM+Debt-Blend (beta-Fallback=1.0): equity_weight*cost_equity + debt_weight*after_tax_cost_debt"
+      : "CAPM+Debt-Blend: equity_weight*cost_equity + debt_weight*after_tax_cost_debt",
+    { betaForWacc: betaForWacc ?? 1.0, fallbackBeta: waccResult.fallbackBeta, debtWeight: waccResult.debtWeight },
+  );
 
   const roicVal = metrics.roic ?? null;
-  if (roicVal !== null && wacc > 0) {
-    add("roic_wacc_spread", roicVal - wacc, "roic - wacc", { roic: roicVal, wacc });
+  if (roicVal !== null && waccResult.wacc > 0) {
+    add("roic_wacc_spread", roicVal - waccResult.wacc, "roic - wacc", { roic: roicVal, wacc: waccResult.wacc });
   }
 
   // -----------------------------------------------------------------------
@@ -569,7 +614,6 @@ function valuationZ(value: number | null, hist: number[]): number | null {
 
 export function deriveMetricsFromDataset(
   dataset: CompanyDataset,
-  marketContext?: MarketContext,
 ): DerivedMetrics {
   const annual = dataset.annual;
   const quarterly = dataset.quarterly;
@@ -636,8 +680,10 @@ export function deriveMetricsFromDataset(
   const roic = investedCapital !== null && investedCapital > 0 && ebit !== null ? ebit * (1 - THRESHOLDS.wacc_tax_rate) / investedCapital : null;
   const roce = totalAssets !== null && totalAssets > 0 && ebit !== null ? ebit / totalAssets : null;
   const roe = totalEquity !== null && totalEquity > 0 && netIncome !== null ? netIncome / totalEquity : null;
-  const wacc = THRESHOLDS.wacc_risk_free_rate + THRESHOLDS.wacc_equity_risk_premium;
-  const roicWaccSpread = roic !== null ? roic - wacc : null;
+  // wacc und roicWaccSpread werden nach enterpriseValue berechnet (CAPM+Debt-Blend via computeWACC).
+  // Niemals stiller Fallback rf+erp — computeWACC dokumentiert den beta-Fallback explizit.
+  let wacc: number | null = null;
+  let roicWaccSpread: number | null = null;
 
   const prevInvestedCapital =
     prevA && trackNum(prevA, "totalDebt") !== null && trackNum(prevA, "totalEquity") !== null && trackNum(prevA, "cashAndEquivalents") !== null
@@ -654,7 +700,11 @@ export function deriveMetricsFromDataset(
   const capexIntensity = revenue && capex !== null ? Math.abs(capex) / revenue : null;
 
   const netDebt = totalDebt !== null && cash !== null ? totalDebt - cash : null;
-  const netDebtToEbitda = ebit !== null && ebit > 0 && netDebt !== null ? netDebt / ebit : null;
+  // EBITDA aus Period-Daten lesen. Kein EBIT-als-Ersatz — das bricht die Audit-Integrität.
+  // D&A ist kein separates Schema-Feld → null wenn ebitda-Feld fehlt (Coverage sinkt).
+  const ebitdaForDebt = latestA ? trackNum(latestA, "ebitda") : null;
+  const netDebtToEbitda =
+    netDebt !== null && ebitdaForDebt !== null && ebitdaForDebt > 0 ? netDebt / ebitdaForDebt : null;
   const interestCoverage = interestExpense !== null && interestExpense > 0 && ebit !== null ? ebit / interestExpense : null;
   const equityRatio = totalAssets !== null && totalAssets > 0 && totalEquity !== null ? totalEquity / totalAssets : null;
   const cashRunwayMonths = quarterly.length > 0
@@ -682,6 +732,49 @@ export function deriveMetricsFromDataset(
   const shares = dataset.ownership.sharesOutstanding;
   const marketCap = currentPrice !== null && shares !== null ? currentPrice * shares : null;
   const enterpriseValue = marketCap !== null && netDebt !== null ? marketCap + netDebt : null;
+  // WACC: CAPM+Debt-Blend via computeWACC. Beta nicht im Dataset-Schema verfügbar → Fallback 1.0.
+  // Kein stiller rf+erp-Fallback — fallbackBeta=true im Rückgabewert dokumentiert diesen Pfad.
+  const waccFromEV = computeWACC(null, netDebt, enterpriseValue);
+  wacc = waccFromEV.wacc;
+  roicWaccSpread = roic !== null ? roic - wacc : null;
+
+  // roicAdj: ROIC mit kapitalisiertem F&E nach Mauboussin-Steady-State-Methode.
+  // capitalizedRnD ≈ annualRnD * (rndLife - 1) = annualRnD * 2 (für 5-Jahres-Linear).
+  // Im Steady State bleibt NOPAT gleich; nur IC wird um den kapitalisierten Bestand erhöht.
+  const annualRnD = latestA ? (trackNum(latestA, "researchAndDevelopment") ?? 0) : 0;
+  const rndLife = 5; // Mauboussin: F&E Nutzungsdauer Jahre
+  const capitalizedRnD = annualRnD * (rndLife - 1); // Buchwert des kapitalisierten Bestands (steady state)
+  const roicAdj: number | null =
+    roic !== null && investedCapital !== null && investedCapital > 0 && annualRnD > 0
+      ? (roic * investedCapital) / (investedCapital + capitalizedRnD) // NOPAT / adjustedIC
+      : roic; // kein F&E → unverändert
+
+  // roicFadeRate: linearer Trend von ROIC über die letzten 5 Jahreswerte (positiv = verbessernd).
+  const roicFadeRate: number | null = (() => {
+    const taxRate = 0.21;
+    const roicSeries = dataset.annual
+      .slice(-5)
+      .map((a: (typeof dataset.annual)[number]) => {
+        const ebitVal = trackNum(a, "ebit");
+        const equityVal = trackNum(a, "totalEquity");
+        const debtVal: number = trackNum(a, "totalDebt") ?? 0;
+        const cashVal: number = trackNum(a, "cashAndEquivalents") ?? 0;
+        if (ebitVal === null || equityVal === null) return null;
+        const ic = equityVal + debtVal - cashVal;
+        if (ic <= 0) return null;
+        return (ebitVal * (1 - taxRate)) / ic;
+      })
+      .filter((v): v is number => v !== null);
+    // Simple linear regression slope
+    const sumX2 = roicSeries.reduce((s: number, _: number, i: number) => s + i * i, 0);
+    if (roicSeries.length < 3) return null;
+    const n = roicSeries.length;
+    const sumX = roicSeries.reduce((s: number, _: number, i: number) => s + i, 0);
+    const sumY = roicSeries.reduce((s: number, v: number) => s + v, 0);
+    const sumXY = roicSeries.reduce((s: number, v: number, i: number) => s + i * v, 0);
+    const denom = n * sumX2 - sumX * sumX;
+    return denom !== 0 ? (n * sumXY - sumX * sumY) / denom : null;
+  })();
   const evSales = enterpriseValue !== null && revenue !== null && revenue > 0 ? enterpriseValue / revenue : null;
   const evGrossProfit = enterpriseValue !== null && grossProfit !== null && grossProfit > 0 ? enterpriseValue / grossProfit : null;
   const pe = marketCap !== null && netIncome !== null && netIncome > 0 ? marketCap / netIncome : null;
@@ -751,6 +844,8 @@ export function deriveMetricsFromDataset(
     roe,
     wacc,
     roicWaccSpread,
+    roicAdj,
+    roicFadeRate,
     roiic,
     cashConversion,
     rAndDIntensity,
@@ -765,6 +860,19 @@ export function deriveMetricsFromDataset(
     evGrossProfit,
     pe,
     peg: pe !== null && revenueCagr3yFwd !== null && revenueCagr3yFwd > 0 ? pe / (revenueCagr3yFwd * 100) : null,
+    evEbitToGrowth: evEbit !== null && ebitCagr3yFwd !== null && ebitCagr3yFwd > 0 ? evEbit / (ebitCagr3yFwd * 100) : null,
+    evSalesToGrowth: evSales !== null && revenueCagr3yFwd !== null && revenueCagr3yFwd > 0 ? evSales / (revenueCagr3yFwd * 100) : null,
+    pegFallbackLevel: (() => {
+      // Level 1: forward PEG (requires positive earnings + positive fwd growth)
+      if (pe !== null && revenueCagr3yFwd !== null && revenueCagr3yFwd > 0) return 1;
+      // Level 2: EV/EBIT-to-Growth (requires positive EBIT + fwd growth)
+      if (evEbit !== null && ebitCagr3yFwd !== null && ebitCagr3yFwd > 0) return 2;
+      // Level 3: EV/GP alone (positive gross profit)
+      if (evGrossProfit !== null) return 3;
+      // Level 4: PSG (EV/Sales, always last resort)
+      if (evSales !== null && revenueCagr3yFwd !== null && revenueCagr3yFwd > 0) return 4;
+      return null;
+    })() as 1 | 2 | 3 | 4 | null,
     pfcf,
     fcfYield,
     dividendYield,
@@ -781,5 +889,7 @@ export function deriveMetricsFromDataset(
     upsideToTargetPct,
     guidanceTrend: dataset.estimates.guidanceTrend,
     institutionalTrend: dataset.ownership.institutionalTrend,
+    shortInterestPctFloat: dataset.shortInterest.pctOfFloat,
+    daysToCover: dataset.shortInterest.daysToCover,
   };
 }

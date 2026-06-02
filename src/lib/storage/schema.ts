@@ -47,6 +47,12 @@ export const scoreHistory = sqliteTable(
     createdAt: integer("created_at").notNull(),
     deltaFromPrevious: integer("delta_from_previous"),
     trend: text("trend").notNull(),
+    /** P3: drei Achsen (JSON-kodiert: {growth,finance,moat} je 0–100 oder null) */
+    axesJson: text("axes_json"),
+    /** P3: Safety-Gate-Status ("ok" | "warn" | "blocked") */
+    safetyStatus: text("safety_status"),
+    /** P3: Archetype-Label z.B. "Quality Growth" */
+    archetype: text("archetype"),
   },
   (t) => ({
     tickerDateIdx: index("score_history_ticker_date_idx").on(t.ticker, t.researchDate),

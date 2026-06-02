@@ -159,6 +159,16 @@ export const ShortInterestSchema = z.object({
   asOf: z.string().nullable().default(null),
 });
 
+export const NewsSentimentSchema = z.object({
+  score: NumberOrNull,                 // -1 to +1, bullish positive
+  bullishPct: NumberOrNull,            // 0–1
+  bearishPct: NumberOrNull,            // 0–1
+  articlesInLastWeek: NumberOrNull,
+  buzz: NumberOrNull,                  // relative buzz score from Finnhub
+  provenance: z.array(ProvenanceSchema).default([]),
+  asOf: z.string().nullable().default(null),
+});
+
 export const SegmentRevenueSchema = z.object({
   periodEnd: z.string(),
   value: NumberOrNull,
@@ -230,6 +240,7 @@ export const CompanyDatasetSchema = z.object({
   segments: z.array(SegmentSchema).default([]),
   saas: SaaSMetricsSchema.nullable().default(null),
   analyst: AnalystSchema,
+  newsSentiment: NewsSentimentSchema.default({}),
   coverage: CoverageReportSchema,
 });
 
@@ -253,6 +264,7 @@ export type PriceHistory = z.infer<typeof PriceHistorySchema>;
 export type Ownership = z.infer<typeof OwnershipSchema>;
 export type InsiderTxn = z.infer<typeof InsiderTxnSchema>;
 export type ShortInterest = z.infer<typeof ShortInterestSchema>;
+export type NewsSentiment = z.infer<typeof NewsSentimentSchema>;
 export type Segment = z.infer<typeof SegmentSchema>;
 export type SaaSMetrics = z.infer<typeof SaaSMetricsSchema>;
 export type Analyst = z.infer<typeof AnalystSchema>;

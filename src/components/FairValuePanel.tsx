@@ -3,6 +3,8 @@
  * Phase F.4
  */
 "use client";
+
+import React from "react";
 import type { Report } from "@/lib/schemas/report";
 
 type FairValue = NonNullable<Report["fair_value"]>;

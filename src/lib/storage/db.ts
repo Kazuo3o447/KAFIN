@@ -28,5 +28,14 @@ sqlite.exec(`
 	CREATE INDEX IF NOT EXISTS score_history_ticker_idx ON score_history (ticker);
 `);
 
+// P3 migration: add three-axis columns if they don't exist yet (idempotent)
+for (const col of [
+  "ALTER TABLE score_history ADD COLUMN axes_json TEXT",
+  "ALTER TABLE score_history ADD COLUMN safety_status TEXT",
+  "ALTER TABLE score_history ADD COLUMN archetype TEXT",
+]) {
+  try { sqlite.exec(col); } catch { /* column already exists */ }
+}
+
 export const db: BetterSQLite3Database<typeof schema> = drizzle(sqlite, { schema });
 export { schema, sqlite };

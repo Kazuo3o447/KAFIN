@@ -36,6 +36,15 @@ export interface StepDoneEvent {
   step: string;
   ms: number;
   ok: boolean;
+  /** Optional: kurze menschenlesbare Zusammenfassung des Step-Ergebnisses */
+  summary?: string;
+}
+export interface MetaEvent {
+  ticker: string;
+  companyName?: string | null;
+  exchange?: string | null;
+  currency?: string | null;
+  sources?: string[];
 }
 export interface ErrorEvent {
   msg: string;
@@ -51,6 +60,7 @@ export type RunEventName =
   | "progress"
   | "step:start"
   | "step:done"
+  | "meta"
   | "error"
   | "done";
 

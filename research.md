@@ -1,9 +1,9 @@
 # research.md
 
-**Version:** 1.0  
-**Stand:** 2026-05-15  
-**Geltungsbereich:** Researchmodul der privaten Trading-Research-Plattform  
-**Status:** verbindlicher Plan, Agenten-Prompt und Bewertungsdokumentation  
+**Version:** 1.1
+**Stand:** 2026-06-02
+**Geltungsbereich:** Researchmodul der privaten Trading-Research-Plattform
+**Status:** verbindlicher Plan, Agenten-Prompt und Bewertungsdokumentation
 
 ---
 
@@ -1554,3 +1554,78 @@ Das Verdict ist ein deterministischer Label (≤70 Zeichen) + ein LLM-generierte
 FORBIDDEN_WORDS: kauf, kaufen, verkaufen, halten, buy, sell, hold, target, kursziel, empfehlung.
 
 LLM-Fallback: wenn Detail-Generierung fehlschlägt oder FORBIDDEN_WORDS enthält → leer.
+
+---
+
+## 41. Markt-Posture-Methodik
+
+Die Plattform berechnet parallel zum Unternehmens-Research eine **globale Marktposture** (0–100), die in jeden Report gestempelt wird. Sie moduliert Sizing, Margin-of-Safety und Timing — **niemals** die fundamentalen Achsen-Scores (Growth/Finance/Moat).
+
+### 41.1 Drei-Säulen-Modell
+
+| Säule | Gewicht | Primäre Signale | Schwellen |
+|---|---:|---|---|
+| Volatilität | 30 % | VIX, MOVE-Index | VIX < 18 → risk_on; VIX ≥ 30 → risk_off; MOVE ≥ 120 → Stress |
+| Credit | 35 % | HY-Spread, z-Score 1J/3J | Spread < 300 bp → risk_on; Spread ≥ 500 bp oder z1y ≥ 2.0 → risk_off |
+| Breadth | 35 % | % S&P-Aktien über MA-200 | Breadth > 65 % → risk_on; Breadth < 45 % → risk_off |
+
+Quellen: FRED (VIXCLS, BAMLH0A0HYM2, DGS10, DFII10, T10Y2Y) + Yahoo Finance (^GSPC, ^IXIC, ^RUT, ^VIX, ^MOVE, GC=F, CL=F, HG=F, BZ=F, DX-Y.NYB, BTC-USD, ^TNX, ^FVX, ^IRX).
+
+### 41.2 Score-Berechnung
+
+```
+score_raw = 0.30 * vol_subscore + 0.35 * credit_subscore + 0.35 * breadth_subscore
+score     = clamp(score_raw + rates_modifier, 0, 100)
+```
+
+**Rates-Modifier (±5 Punkte):**
+- Kurveninversion (10Y–2Y < 0): −5
+- Hoher positiver Real-Yield (>2,5 %): −5
+
+**PostureLabel:**
+- `risk_on`  : score > 65
+- `neutral`  : score 35–65
+- `risk_off` : score < 35
+
+### 41.3 Pillar-Agreement
+
+`pillarAgreement` (0–3): Anzahl Säulen, deren State mit dem Gesamt-Posture übereinstimmt.  
+Ein `pillarAgreement < 2` bei `risk_on` oder `risk_off` löst eine Divergenz-Warnung aus.
+
+### 41.4 Divergenzen
+
+Automatisch erkannte Divergenzen (in `health.divergences`):
+- **Volatilitätsdivergenz:** VIX-Regime ist risk_on, Breadth-Säule ist risk_off (false confidence).
+- **Credit-VIX-Divergenz:** Credit-Säule ist risk_off, Volatilität aber noch neutral oder risk_on (Crunch beginnt).
+
+### 41.5 Auswirkungen auf den Report
+
+| Feld | Quelle | Auswirkung |
+|---|---|---|
+| `market_posture_score` | MarketHealth.score | Gestempelt in `report.market_context` |
+| `market_posture_label` | MarketHealth.posture | Gestempelt in `report.market_context` |
+| `market_pillar_agreement` | MarketHealth.pillarAgreement | Gestempelt in `report.market_context` |
+| Sizing-Hint | posture → trade-setup | `risk_off` → `sizing_hint = "kleiner"` |
+| Margin-of-Safety | posture → trade-setup | `risk_off` → weitere MoS |
+
+**Invariante:** `market_posture_score` beeinflusst niemals `growth_research_score`, `gate`, `confidence` oder Achsen-Scores. Sie ist ein reiner Kontext-Overlay.
+
+### 41.6 Momentum- und News-Framework
+
+Momentum läuft auf **Preis + Revisionen** als primäre Signale; News ist ein reaktiver Katalysator- und Volatilitäts-Overlay, kein primäres Alpha-Signal.
+
+| Signal-Typ | Primär | Sekundär |
+|---|---|---|
+| Preis-Momentum | ✓ (MA50/MA200, RSI, Trend) | — |
+| Schätzungs-Revisionen | ✓ (EPS/Umsatz-Revisionen nach oben) | — |
+| News-Sentiment | — | Reaktions-/Katalysator-Overlay |
+| Finnhub news_sentiment | — | Buzz + Score, schwaches Signal |
+
+Begründung: Nachrichten reflektieren häufig bereits eingepreiste Information. Preis und Revisionen führen News. Für isolierte Ereignisse (Earnings, Guidance-Erhöhung, Katalysator) kann News jedoch als kurzfristiger Momentum-Bestätiger dienen.
+
+### 41.7 Cache und Aktualisierung
+
+- TTL: 30 min während Handelszeiten (08:00–16:00 Ortszeit), 60 min außerhalb.
+- Manuelles Invalidieren: `GET /api/market/health?refresh=1`.
+- Pipeline-Nutzung: `stepComputeTimingAxis` ruft gecachte MarketHealth ab (non-blocking).
+- UI: `src/app/markets/page.tsx` zeigt Live-Board + KI-Analyse (`POST /api/market/analyze`).

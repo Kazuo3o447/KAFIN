@@ -26,6 +26,23 @@ function percentileRank(values: number[], v: number): number | null {
   return (idx / Math.max(sorted.length - 1, 1)) * 100;
 }
 
+function mean(values: number[]): number {
+  return values.reduce((s, v) => s + v, 0) / values.length;
+}
+
+function stdDev(values: number[]): number {
+  if (values.length < 2) return 0;
+  const m = mean(values);
+  return Math.sqrt(values.reduce((s, v) => s + (v - m) ** 2, 0) / (values.length - 1));
+}
+
+function zScore(values: number[], v: number): number | null {
+  if (values.length < 10 || !Number.isFinite(v)) return null;
+  const sd = stdDev(values);
+  if (sd === 0) return 0;
+  return (v - mean(values)) / sd;
+}
+
 export const fredProviderV2: DataProviderV2 = {
   name: "fred",
   capabilities: ["macro"],
@@ -63,16 +80,24 @@ export const fredProviderV2: DataProviderV2 = {
     }
 
     try {
-      const [hy, yc, vix] = await Promise.all([
-        fetchSeries("BAMLH0A0HYM2", key),
-        fetchSeries("T10Y2Y", key),
-        fetchSeries("VIXCLS", key),
+      const [hy, ig, yc, vix, tenY, realTenY] = await Promise.all([
+        fetchSeries("BAMLH0A0HYM2", key),   // HY OAS
+        fetchSeries("BAMLC0A0CM", key),      // IG OAS
+        fetchSeries("T10Y2Y", key),          // 10Y–2Y yield curve
+        fetchSeries("VIXCLS", key),          // VIX
+        fetchSeries("DGS10", key),           // 10Y nominal yield
+        fetchSeries("DFII10", key),          // 10Y real yield (TIPS)
       ]);
 
       const hyLast = hy[hy.length - 1] ?? null;
+      const igLast = ig[ig.length - 1] ?? null;
       const ycLast = yc[yc.length - 1] ?? null;
       const vixLast = vix[vix.length - 1] ?? null;
+      const tenYLast = tenY[tenY.length - 1] ?? null;
+      const realTenYLast = realTenY[realTenY.length - 1] ?? null;
       const vix1y = vix.slice(-252).map((x) => x.value);
+      const hy1y = hy.slice(-252).map((x) => x.value);
+      const hy3y = hy.slice(-756).map((x) => x.value);
 
       return {
         provider: "fred",
@@ -80,10 +105,20 @@ export const fredProviderV2: DataProviderV2 = {
         ok: true,
         data: {
           highYieldSpread: hyLast?.value ?? null,
+          highYieldSpreadZScore1y: hyLast && hy1y.length > 10 ? zScore(hy1y, hyLast.value) : null,
+          highYieldSpreadZScore3y: hyLast && hy3y.length > 10 ? zScore(hy3y, hyLast.value) : null,
+          igSpread: igLast?.value ?? null,
           yieldCurve10y2y: ycLast?.value ?? null,
           vix: vixLast?.value ?? null,
           vixPercentile1y: vixLast ? percentileRank(vix1y, vixLast.value) : null,
-          asOf: [hyLast?.date, ycLast?.date, vixLast?.date].filter(Boolean).sort().at(-1) ?? ctx.runDate,
+          tenYNominal: tenYLast?.value ?? null,
+          tenYReal: realTenYLast?.value ?? null,
+          /** ERP proxy: 1/forward_PE – real10y; populated downstream when PE available */
+          erp: null as number | null,
+          asOf: [hyLast?.date, ycLast?.date, vixLast?.date, tenYLast?.date, realTenYLast?.date]
+            .filter(Boolean)
+            .sort()
+            .at(-1) ?? ctx.runDate,
         },
         provenance: [
           {
@@ -96,8 +131,11 @@ export const fredProviderV2: DataProviderV2 = {
         ],
         raw: [
           { name: "fred_hy_spread.json", contentType: "application/json", data: hy },
+          { name: "fred_ig_spread.json", contentType: "application/json", data: ig },
           { name: "fred_yield_curve_10y2y.json", contentType: "application/json", data: yc },
           { name: "fred_vix.json", contentType: "application/json", data: vix },
+          { name: "fred_10y_nominal.json", contentType: "application/json", data: tenY },
+          { name: "fred_10y_real.json", contentType: "application/json", data: realTenY },
         ],
         durationMs: Date.now() - start,
       };

@@ -151,6 +151,41 @@ export async function renderReportXlsx(report: Report): Promise<Buffer> {
     vd.addRow({ k: "Detail", v: report.verdict.detail });
   }
 
+  // ---- Drei-Achsen (P3) ----
+  if (report.axes && report.axes.length > 0) {
+    const ax = wb.addWorksheet("Axes");
+    ax.columns = [
+      { header: "Achse", key: "axis", width: 10 },
+      { header: "Quant Score", key: "quant", width: 14 },
+      { header: "KI Score", key: "ki", width: 10 },
+      { header: "Kombiniert", key: "combined", width: 12 },
+      { header: "Divergenz", key: "divergence", width: 12 },
+      { header: "KI-Gewicht", key: "kiWeight", width: 12 },
+      { header: "Rating", key: "rating", width: 22 },
+      { header: "Quant Coverage", key: "coverage", width: 16 },
+      { header: "Safety Status", key: "safety", width: 14 },
+    ];
+    ax.getRow(1).font = { bold: true };
+    for (const a of report.axes) {
+      ax.addRow({
+        axis: a.axis.toUpperCase(),
+        quant: a.quant.value !== null ? a.quant.value.toFixed(1) : "n/a",
+        ki: a.ki?.value !== null && a.ki !== null ? (a.ki.value as number).toFixed(1) : "—",
+        combined: a.combined !== null ? a.combined.toFixed(1) : "n/a",
+        divergence: a.divergence !== null ? a.divergence.toFixed(1) : "—",
+        kiWeight: (a.kiWeightEffective * 100).toFixed(0) + "%",
+        rating: a.rating ?? "—",
+        coverage: (a.quant.coverage * 100).toFixed(0) + "%",
+        safety: "",
+      });
+    }
+    // Safety gate summary row
+    if (report.safety_gate) {
+      ax.addRow({});
+      ax.addRow({ axis: "Safety Gate", quant: report.safety_gate.status.toUpperCase(), rating: report.safety_gate.reasons.join("; ") || "—" });
+    }
+  }
+
   const ab = await wb.xlsx.writeBuffer();
   return Buffer.from(ab as ArrayBuffer);
 }

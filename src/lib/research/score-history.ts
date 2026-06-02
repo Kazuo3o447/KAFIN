@@ -3,6 +3,13 @@ import { desc, eq } from "drizzle-orm";
 
 export type ScoreTrend = "up" | "down" | "flat";
 
+/** Compact axis snapshot stored in score_history.axes_json */
+export interface AxisSnapshot {
+  growth: number | null;
+  finance: number | null;
+  moat: number | null;
+}
+
 export interface ScoreHistoryPoint {
   reportId: string;
   researchDate: string;
@@ -63,9 +70,13 @@ export function persistScoreHistoryEntry(entry: {
   scoreTotal: number;
   gate: string;
   confidence: string;
+  axes?: AxisSnapshot | null;
+  safetyStatus?: string | null;
+  archetype?: string | null;
 }): { deltaFromPrevious: number | null; trend: ScoreTrend } {
   const previousScore = loadLatestScore(entry.ticker);
   const change = deriveScoreTrend(entry.scoreTotal, previousScore);
+  const axesJson = entry.axes ? JSON.stringify(entry.axes) : null;
   db.insert(schema.scoreHistory)
     .values({
       reportId: entry.reportId,
@@ -77,6 +88,9 @@ export function persistScoreHistoryEntry(entry: {
       createdAt: Date.now(),
       deltaFromPrevious: change.deltaFromPrevious,
       trend: change.trend,
+      axesJson,
+      safetyStatus: entry.safetyStatus ?? null,
+      archetype: entry.archetype ?? null,
     })
     .onConflictDoUpdate({
       target: schema.scoreHistory.reportId,
@@ -88,6 +102,9 @@ export function persistScoreHistoryEntry(entry: {
         confidence: entry.confidence,
         deltaFromPrevious: change.deltaFromPrevious,
         trend: change.trend,
+        axesJson,
+        safetyStatus: entry.safetyStatus ?? null,
+        archetype: entry.archetype ?? null,
       },
     })
     .run();
