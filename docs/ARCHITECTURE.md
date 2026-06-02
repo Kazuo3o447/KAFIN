@@ -30,7 +30,7 @@ src/
       runs/                         # run lifecycle + SSE
       reports/
         [id]/
-          chat/route.ts             # POST SSE-Chat-Endpunkt (DE-Kontext aus Report-JSON)
+          chat/route.ts             # GET/OPTIONS Availability + POST SSE-Chat-Endpunkt (DE-Kontext aus Report-JSON)
           route.ts                  # report read/export
       market/
         health/route.ts             # GET MarketHealth JSON (cached TTL 30/60 min)
@@ -145,6 +145,9 @@ Orchestrator: [../src/lib/orchestrator/pipeline.ts](../src/lib/orchestrator/pipe
 ### Phase 3: Nachverarbeitung
 
 7. score: stepComputeScoreAndGate
+  - davor gilt Domain-Routing aus `stepExtractFacts`: `fundamental` | `qualitative` | `data_incomplete`
+  - `qualitative` unterdrückt den 0-100-Fundamentalscore und baut stattdessen eine quellenbasierte Story-These
+  - `data_incomplete` stoppt das Scheinurteil, nennt fehlende Schluesseldaten und markiert Re-Run-Bedarf
 8. timing: stepComputeTimingAxis — ruft auch `fetchAndComputeMarketHealth()` auf (gecacht, non-blocking); befüllt `state.marketHealth`
 9. peer: stepComputePeerPercentiles
 10. fair_value: stepComputeFairValue
@@ -170,10 +173,13 @@ Progress, Step-Start/Done, Meta, Error und Done werden ueber SSE emittiert.
 
 Deterministisch:
 - Kennzahlen, Scoring, Gate, Category
+- Business-Model-Classifier aus Filing-/Quellentext
+- Analysis-Domain-Routing und Plausibilitaets-Waechter
 - Timing/Regime
 - Fair Value
 - Trade Setup
 - Data Quality, Coverage, Konfliktauflosung, Confidence Caps
+- Fetch-Status-Klassifikation fuer optionale Capabilities (`available`, `not_reported`, `rate_limited`, `fetch_failed`), inkl. Entitlement-/HTML-Fallback fuer Provider
 
 LLM-basiert (guarded):
 - Optionaler Analyst-Layer (Interpretation)
@@ -207,7 +213,7 @@ Konfiguration kommt aus [../src/lib/llm/config.ts](../src/lib/llm/config.ts) mit
 
 Schema:
 - Pflichtfelder in [../src/lib/schemas/report.ts](../src/lib/schemas/report.ts)
-- inklusive run_integrity, audit_snapshot, score_interpretation, analyst, trade_setup
+- inklusive `analysis_domain`, `analysis_domain_reasons`, `qualitative_thesis`, `plausibility_flags`, run_integrity, audit_snapshot, score_interpretation, analyst, trade_setup
 
 Report-UI:
 - [../src/app/reports/[id]/page.tsx](../src/app/reports/[id]/page.tsx)
@@ -226,6 +232,9 @@ Die Einzeltitel-Seite [../src/app/reports/[id]/page.tsx](../src/app/reports/[id]
 1. Markt-Header (Posture as-of, Link auf Markets)
 2. Decision-Hero (Aktion, Setup, MoS, Linse, Conviction)
 3. Scorecard-Radar (Growth/Finance/Moat/Bewertung/Momentum) mit Fallback auf `score_heatmap`
+  - nur fuer `analysis_domain = fundamental`
+  - `qualitative` rendert stattdessen Quellen-Thesenlayout (Backlog, Kapazitaet, Finanzierung, Partner, Risiken)
+  - `data_incomplete` rendert nur Datenluecken + Re-Run-Hinweis
 4. Drei farbcodierte Kennzahlenblöcke (Wachstum/Finanzen/Momentum), klickbar in Chat-Fokus
 5. Kanonische Fair-Value-Brücke über `FairValuePanel` (inkl. PEG-Leiter + GARP-Asymmetrie)
 6. Deep-Dive-Akkordeons (Moat, Forensik, Red-Team, Verlauf, Quellen)

@@ -758,6 +758,38 @@ Nicht als Long-Kandidat. Nur im Research dokumentieren.
 
 Kein Paper-Trade. Agenten muessen `Too Hard` aktiv nutzen, statt Scheingenauigkeit zu erzeugen.
 
+### 17.8 Analysis-Domain-Routing
+
+Die Plattform trennt drei Zustaende strikt:
+
+- `fundamental`: Kennzahlen tragen das Urteil; normales 3-Achsen-Scoring.
+- `qualitative`: Kennzahlen greifen strukturell nicht, z. B. AI-Infra-Buildout, Krypto-Miner im Pivot, Pre-Revenue-Buildout, klinisches Biotech. Hier ist ein 0-100-Fundamentalscore verboten; stattdessen wird eine quellenbasierte These gebaut.
+- `data_incomplete`: Fundamentale Bewertung waere anwendbar, aber Fetch/Ableitung oder Coverage sind unzureichend; Ergebnis ist Re-Run statt Scheingenauigkeit.
+
+`Too Hard` bleibt als Kategorie fuer fundamentale Unverstehbarkeit erhalten, ersetzt aber nicht das Domain-Routing.
+
+### 17.9 Qualitativer Thesen-Modus
+
+Im Modus `qualitative` muessen Filings, 8-Ks und belastbare News aktiv gelesen und in folgende Struktur ueberfuehrt werden:
+
+- Backlog / kontrahierte Deals,
+- Kapazitaetsausbau,
+- Finanzierung / Runway,
+- Schluesselpartner,
+- Execution- und Verwaesserungsrisiken,
+- Bull / Bear / Katalysatoren / Falsifikation.
+
+Leere Platzhalter sind unzulaessig. Entweder echter Quelleninhalt mit Beleg oder ehrlich leer mit Grund.
+
+### 17.10 Plausibilitaets-Waechter
+
+Widerspruechliche Kennzahlen duerfen das Verdict nicht treiben. Beispiele:
+
+- Wachstum ~0% trotz massiv negativer FCF-Marge oder grosser Transformationsfinanzierung,
+- Net Debt/EBITDA bei Leasing-/Reconciliation-Artefakten oder nicht aussagekraeftigem EBITDA.
+
+Solche Werte werden gedimmt oder unterdrueckt und nur mit Vorbehalt angezeigt.
+
 ---
 
 ## 18. Score-Interpretation

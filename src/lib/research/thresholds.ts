@@ -29,6 +29,11 @@ export const THRESHOLDS = {
   // Coverage / Confidence (score.ts / signals.ts)
   coverage_floor: 0.5,
   coverage_too_hard: 0.35,
+  domain_qualitative_capex_ocf_min: 0.75,
+  domain_qualitative_signal_count_min: 2,
+  domain_data_incomplete_critical_coverage_min: 0.45,
+  domain_implausible_growth_abs_max: 0.005,
+  domain_implausible_fcf_margin_min: -0.5,
 
   // Forensik-Scores (research.md §38)
   piotroski_strong: 7,

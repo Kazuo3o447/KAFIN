@@ -186,8 +186,10 @@ export const yahooProviderV2: DataProviderV2 = {
       if (cap === "prices") {
         const period1 = new Date();
         period1.setFullYear(period1.getFullYear() - 4);
+        const period2 = new Date();
         const history = (await yahooFinance.historical(ctx.ticker, {
           period1,
+          period2,
           interval: "1d",
         })) as Array<{ date: Date; close?: number; volume?: number }>;
         const quoteRaw = await yahooFinance.quote(ctx.ticker, {}, { validateResult: false });

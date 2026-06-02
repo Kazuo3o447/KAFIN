@@ -8,6 +8,25 @@ import { getLLMConfig } from "@/lib/llm/config";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+export async function GET(_req: Request, ctx: { params: { id: string } }) {
+  const id = (ctx.params.id ?? "").trim();
+  if (!id) return NextResponse.json({ error: "invalid_id" }, { status: 400 });
+
+  const row = db.select().from(schema.reports).where(eq(schema.reports.id, id)).get();
+  if (!row) return NextResponse.json({ error: "not_found" }, { status: 404 });
+
+  return NextResponse.json({ ok: true, chat: "available" }, { status: 200 });
+}
+
+export async function OPTIONS() {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      Allow: "GET,POST,OPTIONS",
+    },
+  });
+}
+
 interface ChatMessage {
   role: "user" | "assistant" | "system";
   content: string;

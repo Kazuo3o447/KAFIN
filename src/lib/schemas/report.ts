@@ -17,6 +17,7 @@ export const CategorySchema = z.enum([
 export const GateSchema = z.enum(["Green", "Yellow", "Red"]);
 export const ConfidenceSchema = z.enum(["low", "medium", "high"]);
 export const LensSchema = z.enum(["quality_compounder", "emerging_winner", "quality_garp"]);
+export const AnalysisDomainSchema = z.enum(["fundamental", "qualitative", "data_incomplete"]);
 export const RegimeSchema = z.enum(["risk_on", "neutral", "risk_off"]);
 export const ScoreTrendSchema = z.enum(["up", "down", "flat"]);
 export const RubricClassSchema = z.enum([
@@ -251,6 +252,35 @@ const AssumptionEntrySchema = z.object({
   kind: z.literal("assumption"),
 });
 
+const QualitativeEvidenceSchema = z.object({
+  claim: z.string(),
+  sourceUrl: z.string(),
+  sourceDate: z.string().nullable().default(null),
+  claimType: z.enum(["backlog", "capacity", "financing", "partner", "bull", "bear", "catalyst"]),
+});
+
+const QualitativeThesisSchema = z.object({
+  verdict: z.enum(["spekulativ_chance", "spekulativ_risiko", "beobachten"]),
+  conviction: ConfidenceSchema,
+  backlog: z.array(QualitativeEvidenceSchema).default([]),
+  capacity: z.array(QualitativeEvidenceSchema).default([]),
+  financing: z.array(QualitativeEvidenceSchema).default([]),
+  keyPartners: z.array(QualitativeEvidenceSchema).default([]),
+  executionRisks: z.array(z.string()).default([]),
+  dilutionRisk: z.string().nullable().default(null),
+  bull: z.array(QualitativeEvidenceSchema).default([]),
+  bear: z.array(QualitativeEvidenceSchema).default([]),
+  catalysts: z.array(QualitativeEvidenceSchema).default([]),
+  falsification: z.array(z.string()).default([]),
+});
+
+const PlausibilityFlagSchema = z.object({
+  code: z.enum(["revenue_growth_implausible", "net_debt_to_ebitda_implausible"]),
+  metric: z.string(),
+  severity: z.enum(["warn", "suppress"]),
+  message: z.string(),
+});
+
 export const ReportSchema = z.object({
   ticker: z.string().min(1),
   company_name: z.string().default(""),
@@ -259,6 +289,8 @@ export const ReportSchema = z.object({
   sector: z.string().default(""),
   industry: z.string().default(""),
   research_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  analysis_domain: AnalysisDomainSchema.default("fundamental"),
+  analysis_domain_reasons: z.array(z.string()).default([]),
   category: CategorySchema,
   growth_research_score: z.number().min(0).max(100).nullable().default(null),
   gate: GateSchema,
@@ -408,6 +440,8 @@ export const ReportSchema = z.object({
     .nullable()
     .default(null),
   metric_applicability: z.record(z.string(), z.unknown()).default({}),
+  qualitative_thesis: QualitativeThesisSchema.nullable().default(null),
+  plausibility_flags: z.array(PlausibilityFlagSchema).default([]),
 
   // v2: hygiene + clustering
   red_flags_clustered: z

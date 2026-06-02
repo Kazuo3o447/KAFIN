@@ -30,8 +30,20 @@ function buildUrl(path: string, symbol: string, key: string): string {
 
 async function fetchJson<T>(url: string): Promise<T> {
   const res = await throttledFetch(url, { headers: { Accept: "application/json" } }, { ratePerSec: 3 });
-  if (!res.ok) throw new Error(`http_${res.status}`);
-  return (await res.json()) as T;
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403 || res.status === 404) {
+      throw new Error("not_entitled_or_unavailable");
+    }
+    throw new Error(`http_${res.status}`);
+  }
+
+  const text = await res.text();
+  const trimmed = text.trimStart();
+  if (trimmed.startsWith("<!DOCTYPE") || trimmed.startsWith("<html")) {
+    throw new Error("not_entitled_or_unavailable");
+  }
+
+  return JSON.parse(text) as T;
 }
 
 function makeResult(

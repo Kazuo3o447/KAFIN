@@ -13,6 +13,7 @@ Verbindliche Produktgrenzen stehen in [docs/MANIFEST.md](docs/MANIFEST.md).
 - LLM als Interpret, nicht als Rechner: Analyst-Texte sind getrennt und duerfen numerische Felder nicht veraendern.
 - Reproduzierbarkeit und Audit: Rohartefakte, Logs, Report-JSON und Version-Metadaten werden persistiert.
 - Resilienz bei Datenabruf: Capability-Status, Retry/Backoff und Run-Integrity-Banner sind Teil des Reports.
+- Domain-Routing fuer Ergebnisqualitaet: fundamental, qualitative, data_incomplete.
 
 ---
 
@@ -28,6 +29,7 @@ Verbindliche Produktgrenzen stehen in [docs/MANIFEST.md](docs/MANIFEST.md).
   - Mini-Charts, Ownership/Smart-Money, Advisor-Trigger
 - Watchlist, Reports-Liste, Vergleichsansicht, Exporte (PDF/XLSX/JSON).
 - Live-Run-Events via SSE.
+- Report-Chat-Availability-Checks ohne 405-Rauschen (GET/OPTIONS auf Report-Chat-Route).
 
 ---
 
@@ -98,6 +100,8 @@ API (Auszug):
 - /api/settings
 - /api/settings/test-llm
 - /api/health
+- /api/market/health
+- /api/market/analyze
 
 ---
 

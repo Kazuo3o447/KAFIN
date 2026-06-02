@@ -17,6 +17,12 @@ export interface MetricApplicability {
     | "marketplace"
     | "ecommerce"
     | "financials"
+    | "ai_infrastructure_neocloud"
+    | "crypto_miner"
+    | "pre_revenue_buildout"
+    | "clinical_biotech"
+    | "spac"
+    | "hardware_plus_saas"
     | "general_equity";
   reason: string;
   requiredInputs: string[];

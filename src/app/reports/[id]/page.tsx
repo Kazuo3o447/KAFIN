@@ -92,6 +92,31 @@ function cleanAnnualSeries(raw: Array<Record<string, unknown>>): Array<{ year: s
   return [...byYear.values()].sort((a, b) => a.year.localeCompare(b.year));
 }
 
+function EvidenceList({
+  items,
+  empty,
+}: {
+  items: Array<{ claim: string; sourceUrl: string; sourceDate: string | null }>;
+  empty: string;
+}) {
+  if (items.length === 0) {
+    return <div className="text-secondary-500">{empty}</div>;
+  }
+
+  return (
+    <div className="space-y-1">
+      {items.map((item, idx) => (
+        <div key={`${item.sourceUrl}-${idx}`} className="border border-secondary-800 bg-secondary-950/30 px-2 py-1">
+          <div className="text-secondary-100">{item.claim}</div>
+          <a href={item.sourceUrl} target="_blank" rel="noreferrer" className="text-[11px] text-accent-300 hover:underline break-all">
+            Quelle{item.sourceDate ? ` · ${item.sourceDate}` : ""}
+          </a>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function ReportTerminalPage({
   params,
   searchParams,
@@ -132,6 +157,9 @@ export default function ReportTerminalPage({
 
   const garpResult = report.lens_results.find((x) => (x as Record<string, unknown>).lens === "quality_garp") as Record<string, unknown> | undefined;
   const garpReroute = garpResult?.lensFit === false;
+  const isFundamental = report.analysis_domain === "fundamental";
+  const isQualitative = report.analysis_domain === "qualitative";
+  const isDataIncomplete = report.analysis_domain === "data_incomplete";
 
   return (
     <main className="mx-auto max-w-[1600px] space-y-3 px-3 py-3 text-[12px] leading-snug">
@@ -156,6 +184,20 @@ export default function ReportTerminalPage({
         <div className="border border-amber-700/50 bg-amber-950/20 px-3 py-2 text-amber-200">
           <div className="text-[11px] uppercase tracking-wide">Was fehlt & warum</div>
           <div className="mt-1 text-[12px]">{report.trader_cockpit.critical_missing_data.join(" · ")}</div>
+        </div>
+      )}
+
+      {isQualitative && (
+        <div className="border border-sky-700/50 bg-sky-950/20 px-3 py-2 text-sky-100" data-testid="qualitative-banner">
+          <div className="text-[11px] uppercase tracking-wide">spekulativ</div>
+          <div>Nicht fundamental bewertbar. These wird aus Filings, Deals, Kapazität und Finanzierung abgeleitet.</div>
+        </div>
+      )}
+
+      {isDataIncomplete && (
+        <div className="border border-amber-700/50 bg-amber-950/20 px-3 py-2 text-amber-100" data-testid="data-incomplete-banner">
+          <div className="text-[11px] uppercase tracking-wide">daten unvollständig</div>
+          <div>{report.analysis_domain_reasons.join(" · ") || "Schlüsseldaten fehlen; Run erneut ausführen."}</div>
         </div>
       )}
 
@@ -202,13 +244,33 @@ export default function ReportTerminalPage({
           )}
         </div>
         <div className="space-y-0.5">
-          <div className="uppercase tracking-wide text-secondary-400 text-[11px]">Score &amp; Gate</div>
-          <div className="font-mono text-secondary-100">
-            {fmt(report.growth_research_score)} / 100 · {report.gate} · {report.confidence}
+          <div className="uppercase tracking-wide text-secondary-400 text-[11px]">
+            {isFundamental ? "Score & Gate" : isQualitative ? "Qualitativer Modus" : "Datenlage"}
           </div>
-          <div className="text-secondary-400 text-[11px]">
-            Linse {report.lens} · {report.category}
-          </div>
+          {isFundamental ? (
+            <>
+              <div className="font-mono text-secondary-100">
+                {fmt(report.growth_research_score)} / 100 · {report.gate} · {report.confidence}
+              </div>
+              <div className="text-secondary-400 text-[11px]">
+                Linse {report.lens} · {report.category}
+              </div>
+            </>
+          ) : isQualitative ? (
+            <>
+              <div className="font-mono text-secondary-100">
+                {report.qualitative_thesis?.verdict ?? "beobachten"} · {report.qualitative_thesis?.conviction ?? report.confidence}
+              </div>
+              <div className="text-secondary-400 text-[11px]">
+                {report.business_model_profile?.type ?? "Story-Stock"} · {report.analysis_domain_reasons.join(" · ") || "Quellengetriebene These"}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="font-mono text-secondary-100">erneut ausführen · {report.confidence}</div>
+              <div className="text-secondary-400 text-[11px]">{report.analysis_domain_reasons.join(" · ") || "Schlüsseldaten fehlen"}</div>
+            </>
+          )}
           <div className="flex items-center gap-2 mt-0.5">
             <PinButton ticker={report.ticker} reportId={params.id} initiallyPinned={pinned} />
             <ExportButtons reportId={params.id} ticker={report.ticker} />
@@ -219,23 +281,74 @@ export default function ReportTerminalPage({
       {/* ================================================================
           ZONE 2 · SCORECARD (3 Achsen + Safety-Gate)
           ================================================================ */}
-      <section
-        className="border border-secondary-800 bg-secondary-950/40 p-2"
-        data-testid="scorecard-panel"
-      >
-        <ReportScorecardRadar
-          axes={report.axes}
-          scoreHeatmap={scoreHeatmap as Array<Record<string, unknown>>}
-          safetyGate={report.safety_gate}
-          confidenceScore={report.confidence_score}
-          dataQualityCoverage={report.data_quality.coverage.applicabilityAdjustedCoverage}
-        />
-      </section>
+      {isFundamental ? (
+        <section
+          className="border border-secondary-800 bg-secondary-950/40 p-2"
+          data-testid="scorecard-panel"
+        >
+          <ReportScorecardRadar
+            axes={report.axes}
+            scoreHeatmap={scoreHeatmap as Array<Record<string, unknown>>}
+            safetyGate={report.safety_gate}
+            confidenceScore={report.confidence_score}
+            dataQualityCoverage={report.data_quality.coverage.applicabilityAdjustedCoverage}
+          />
+        </section>
+      ) : isQualitative ? (
+        <section className="border border-secondary-800 bg-secondary-950/40 p-3 space-y-3" data-testid="qualitative-thesis-panel">
+          <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+            <div>
+              <div className="mb-1 uppercase tracking-wide text-secondary-400 text-[11px]">Backlog & Partner</div>
+              <EvidenceList items={report.qualitative_thesis?.backlog ?? []} empty="Keine belastbaren Deal-/Backlog-Hinweise extrahiert." />
+              <div className="mt-2">
+                <EvidenceList items={report.qualitative_thesis?.keyPartners ?? []} empty="Keine belastbaren Partner-Hinweise extrahiert." />
+              </div>
+            </div>
+            <div>
+              <div className="mb-1 uppercase tracking-wide text-secondary-400 text-[11px]">Kapazität & Finanzierung</div>
+              <EvidenceList items={report.qualitative_thesis?.capacity ?? []} empty="Keine belastbaren Kapazitätshinweise extrahiert." />
+              <div className="mt-2">
+                <EvidenceList items={report.qualitative_thesis?.financing ?? []} empty="Keine belastbaren Finanzierungshinweise extrahiert." />
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
+            <div className="border border-secondary-800 bg-secondary-950/30 p-2">
+              <div className="uppercase tracking-wide text-secondary-400 text-[11px] mb-1">Execution-Risiken</div>
+              <div>{report.qualitative_thesis?.executionRisks.join(" · ") || "n/a"}</div>
+              <div className="mt-1 text-amber-300">Verwässerung: {report.qualitative_thesis?.dilutionRisk || "derzeit kein klares Signal"}</div>
+            </div>
+            <div className="border border-secondary-800 bg-secondary-950/30 p-2">
+              <div className="uppercase tracking-wide text-secondary-400 text-[11px] mb-1">Bull / Bear</div>
+              <div>Bull: {(report.qualitative_thesis?.bull ?? []).map((item) => item.claim).join(" · ") || "n/a"}</div>
+              <div className="mt-1">Bear: {(report.qualitative_thesis?.bear ?? []).map((item) => item.claim).join(" · ") || "n/a"}</div>
+            </div>
+            <div className="border border-secondary-800 bg-secondary-950/30 p-2">
+              <div className="uppercase tracking-wide text-secondary-400 text-[11px] mb-1">Katalysatoren & Falsifikation</div>
+              <div>Katalysatoren: {(report.qualitative_thesis?.catalysts ?? []).map((item) => item.claim).join(" · ") || "n/a"}</div>
+              <div className="mt-1">Falsifikation: {(report.qualitative_thesis?.falsification ?? []).join(" · ") || "n/a"}</div>
+            </div>
+          </div>
+
+          {report.plausibility_flags.length > 0 && (
+            <div className="border border-amber-700/50 bg-amber-950/20 p-2 text-amber-200">
+              Plausibilitäts-Wächter: {report.plausibility_flags.map((flag) => flag.message).join(" · ")}
+            </div>
+          )}
+        </section>
+      ) : (
+        <section className="border border-secondary-800 bg-secondary-950/40 p-3" data-testid="data-incomplete-panel">
+          <div className="uppercase tracking-wide text-secondary-400 text-[11px] mb-1">Was fehlt & warum</div>
+          <div>{report.analysis_domain_reasons.join(" · ") || "Schlüsseldaten fehlen oder sind technisch unvollständig."}</div>
+          <div className="mt-2 text-secondary-400">Kritische Lücken: {report.trader_cockpit.critical_missing_data.join(" · ") || "n/a"}</div>
+        </section>
+      )}
 
       {/* ================================================================
           ZONE 3 · DREI FARBKODIERTE KENNZAHLENBLÖCKE
           ================================================================ */}
-      <section className="grid grid-cols-1 gap-2 xl:grid-cols-3" data-testid="metrics-color-blocks">
+      {isFundamental && <section className="grid grid-cols-1 gap-2 xl:grid-cols-3" data-testid="metrics-color-blocks">
         <div className="border border-secondary-800 bg-secondary-950/40 p-2">
           <div className="text-[11px] uppercase tracking-wide text-secondary-400 mb-1">Wachstum · Coverage {(report.data_quality.coverage.indicatorScoreCoverage * 100).toFixed(0)}%</div>
           <div className="space-y-1 text-[12px]">
@@ -275,7 +388,7 @@ export default function ReportTerminalPage({
             <a href={`?focusMetric=short_interest_pct_float#chat-panel`} className="flex justify-between hover:bg-secondary-900/40 px-1 py-0.5"><span>Short % / DTC</span><span>{shortPctStr} / {dtcStr}</span></a>
           </div>
         </div>
-      </section>
+      </section>}
 
       {/* ================================================================
           ZONE 4 · FAIR-VALUE-BRÜCKE

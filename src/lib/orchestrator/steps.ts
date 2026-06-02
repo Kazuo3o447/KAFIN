@@ -49,6 +49,15 @@ import {
 } from "@/lib/research/forensics";
 import { classifyBusinessModel } from "@/lib/research/business-model";
 import { classifyBusinessModelProfile, type BusinessModelProfile } from "@/lib/research/business-model-classifier";
+import { buildMetricApplicability } from "@/lib/research/metric-applicability";
+import {
+  buildQualitativeThesis,
+  buildPlausibilityFlags,
+  determineAnalysisDomain,
+  type AnalysisDomain,
+  type PlausibilityFlag,
+  type QualitativeThesis,
+} from "@/lib/research/analysis-domain";
 import { findPeerBucket } from "@/lib/research/peer-universe";
 import { computePeerPercentiles, type PeerPercentiles } from "@/lib/research/peer-cache";
 import { deriveConfidenceScore } from "@/lib/research/combo-signals";
@@ -115,6 +124,10 @@ export interface PipelineState {
   businessModelType?: string;
   businessModelProfile?: BusinessModelProfile;
   metricApplicability?: Record<string, unknown>;
+  analysisDomain?: AnalysisDomain;
+  analysisDomainReasons?: string[];
+  qualitativeThesis?: QualitativeThesis | null;
+  plausibilityFlags?: PlausibilityFlag[];
   peerPercentiles?: PeerPercentiles;
   debtBreakdown?: DebtBreakdown;
   dataQuality?: DataCoverage;
@@ -470,6 +483,19 @@ export async function stepExtractFacts(state: PipelineState): Promise<void> {
   };
   const km = KeyMetricsSchema.parse({});
   state.keyMetrics = mergeDeterministicMetrics(km, state.derivedMetrics);
+  state.metricApplicability = state.businessModelProfile
+    ? buildMetricApplicability(state.keyMetrics, state.businessModelProfile)
+    : {};
+  const domainDecision = determineAnalysisDomain({
+    profile: state.businessModelProfile,
+    keyMetrics: state.keyMetrics,
+    facts: state.facts ?? [],
+    criticalCoverage: state.dataQuality?.criticalMetricCoverage ?? 1,
+    runIncompleteDueToTechnicalFailure: state.runIncompleteDueToTechnicalFailure ?? false,
+  });
+  state.analysisDomain = domainDecision.domain;
+  state.analysisDomainReasons = domainDecision.reasons;
+  state.plausibilityFlags = buildPlausibilityFlags(state.keyMetrics, state.facts ?? []);
   logRun(state.runId, "info", "[extract] deterministic identity + key metrics hydrated from dataset/derived metrics");
 }
 
@@ -545,6 +571,88 @@ export async function stepComputeScoreAndGate(state: PipelineState): Promise<voi
       regulated: null,
       primaryFramework: "general_equity" as const,
     };
+    const zeroBreakdown = Object.fromEntries(
+      (Object.keys(BLOCK_WEIGHTS) as BlockKey[]).map((key) => [key, 0]),
+    ) as Record<BlockId, number>;
+
+    if (state.analysisDomain === "qualitative") {
+      const thesis = buildQualitativeThesis({
+        facts: state.facts ?? [],
+        keyMetrics: state.keyMetrics ?? KeyMetricsSchema.parse({}),
+        profile: state.businessModelProfile,
+        plausibilityFlags: state.plausibilityFlags ?? [],
+      });
+      state.qualitativeThesis = thesis;
+      state.scoreTotal = null;
+      state.coverage = activeLens.coverage;
+      state.scoreBreakdown = zeroBreakdown;
+      state.gate = activeLens.safetyGate.status === "blocked" ? "Red" : "Yellow";
+      state.category = thesis.verdict === "spekulativ_risiko" ? "Hype/Risk" : "Transitional";
+      state.hardBlockers = activeLens.safetyGate.status === "blocked" ? activeLens.safetyGate.reasons : [];
+      state.redFlags = [...(state.redFlags ?? [])];
+      state.redFlagsClustered = [];
+      state.dataQuality = {
+        keyMetricCoverage: activeLens.coverage,
+        criticalMetricCoverage: critical.coverage,
+        indicatorScoreCoverage: activeLens.coverage,
+        sourceSupportCoverage: Math.max(0.4, Math.min(1, (state.sourceMap?.size ?? 0) / 12)),
+        providerCrossCheckCoverage: priorConflicts.length > 0 ? 1 : 0,
+        applicabilityAdjustedCoverage: activeLens.coverage,
+        missingCriticalMetrics: critical.missing,
+        notApplicableMetrics: [],
+        unsupportedClaims: [],
+        conflictingMetrics: priorConflicts,
+      };
+      state.confidence = thesis.conviction;
+      state.thesis = {
+        thesis_summary: [
+          `${state.businessModelProfile?.type ?? "Story-Stock"} wird qualitativ statt fundamental bewertet.`,
+          ...(state.analysisDomainReasons ?? []),
+        ].join(" "),
+        bull_case: thesis.bull.map((item) => item.claim),
+        bear_case: thesis.bear.map((item) => item.claim),
+        catalysts: thesis.catalysts.map((item) => item.claim),
+        open_questions: thesis.executionRisks,
+        falsification_tests: thesis.falsification,
+      };
+      logRun(state.runId, "info", `[score] routed to qualitative thesis mode profile=${state.businessModelProfile?.primaryFramework ?? "unknown"}`);
+      return;
+    }
+
+    if (state.analysisDomain === "data_incomplete") {
+      state.scoreTotal = null;
+      state.coverage = activeLens.coverage;
+      state.scoreBreakdown = zeroBreakdown;
+      state.gate = "Yellow";
+      state.category = "Too Hard";
+      state.hardBlockers = [];
+      state.redFlags = [...(state.redFlags ?? [])];
+      state.redFlagsClustered = [];
+      state.dataQuality = {
+        keyMetricCoverage: activeLens.coverage,
+        criticalMetricCoverage: critical.coverage,
+        indicatorScoreCoverage: activeLens.coverage,
+        sourceSupportCoverage: Math.max(0, Math.min(1, (state.sourceMap?.size ?? 0) / 12)),
+        providerCrossCheckCoverage: priorConflicts.length > 0 ? 1 : 0,
+        applicabilityAdjustedCoverage: activeLens.coverage,
+        missingCriticalMetrics: critical.missing,
+        notApplicableMetrics: [],
+        unsupportedClaims: [],
+        conflictingMetrics: priorConflicts,
+      };
+      state.confidence = "low";
+      state.thesis = {
+        thesis_summary: "Fundamentales Urteil ausgesetzt: Datenbasis ist für die anwendbare Rubrik unvollständig.",
+        bull_case: [],
+        bear_case: [],
+        catalysts: [],
+        open_questions: [...critical.missing, ...(state.analysisDomainReasons ?? [])],
+        falsification_tests: ["Run mit vollständiger Datenbasis erneut ausführen."],
+      };
+      logRun(state.runId, "info", "[score] routed to data_incomplete mode");
+      return;
+    }
+
     state.scoreTotal = activeLens.score;
     state.coverage = activeLens.coverage;
     state.scoreBreakdown = activeLens.blockBreakdown as Record<BlockId, number>;
@@ -556,7 +664,7 @@ export async function stepComputeScoreAndGate(state: PipelineState): Promise<voi
       : state.gate === "Red"
         ? ["Deterministic lens gate triggered"]
         : [];
-    state.redFlags = [];
+    state.redFlags = [...(state.redFlags ?? [])];
     state.redFlagsClustered = [];
     state.dataQuality = {
       keyMetricCoverage: activeLens.coverage,
@@ -721,6 +829,12 @@ export async function stepComputeTimingAxis(state: PipelineState): Promise<void>
 // Step 6: analyst interpretation (optional, non-blocking)
 // -----------------------------------------------------------
 export async function stepInterpretAnalyst(state: PipelineState): Promise<void> {
+  if (state.analysisDomain && state.analysisDomain !== "fundamental") {
+    state.analyst = null;
+    logRun(state.runId, "info", `[analyst] skipped for domain=${state.analysisDomain}`);
+    return;
+  }
+
   const scoreBreakdown = ScoreBreakdownSchema.parse(state.scoreBreakdown);
   const deterministicReport = ReportSchema.parse({
     ticker: state.ticker,
@@ -730,6 +844,7 @@ export async function stepInterpretAnalyst(state: PipelineState): Promise<void> 
     sector: state.identity?.sector ?? "",
     industry: state.identity?.industry ?? "",
     research_date: state.runDate,
+    analysis_domain: state.analysisDomain ?? "fundamental",
     category: state.category,
     growth_research_score: state.scoreTotal,
     gate: state.gate,
@@ -1016,6 +1131,34 @@ export async function stepComputeFairValue(state: PipelineState): Promise<void> 
 // Step 7b: generateVerdict (LLM + deterministic)
 // -----------------------------------------------------------
 export async function stepGenerateVerdict(state: PipelineState): Promise<void> {
+  if (state.analysisDomain === "qualitative") {
+    const thesis = state.qualitativeThesis;
+    const label = thesis?.verdict === "spekulativ_chance"
+      ? "Qualitativ — spekulative Chance"
+      : thesis?.verdict === "spekulativ_risiko"
+        ? "Qualitativ — spekulatives Risiko"
+        : "Qualitativ — beobachten";
+    state.verdict = {
+      label,
+      reasonCode: "qualitative_domain",
+      weakestBlock: null,
+      detail: (state.analysisDomainReasons ?? []).join(" ") || "Fundamentalscore bewusst unterdrückt; These aus Quellenhinweisen ableiten.",
+    };
+    logRun(state.runId, "info", `[verdict] label="${label}" code=qualitative_domain`);
+    return;
+  }
+
+  if (state.analysisDomain === "data_incomplete") {
+    state.verdict = {
+      label: "Erneut ausführen — Daten unvollständig",
+      reasonCode: "data_incomplete",
+      weakestBlock: null,
+      detail: (state.analysisDomainReasons ?? []).join(" ") || "Schlüsseldaten fehlen oder konnten technisch nicht belastbar abgeleitet werden.",
+    };
+    logRun(state.runId, "info", "[verdict] label=Erneut ausführen — Daten unvollständig code=data_incomplete");
+    return;
+  }
+
   const verdictDet = buildVerdict({
     gate: state.gate!,
     category: state.category!,
@@ -1077,6 +1220,21 @@ export async function stepGenerateVerdict(state: PipelineState): Promise<void> {
 // Step 7d: computeTradeSetup (deterministic)
 // -----------------------------------------------------------
 export async function stepComputeTradeSetup(state: PipelineState): Promise<void> {
+  if (state.analysisDomain && state.analysisDomain !== "fundamental") {
+    state.tradeSetup = {
+      entry_zone_max: null,
+      margin_of_safety: null,
+      stop_ref: null,
+      risk_reward: null,
+      action: "warten",
+      sizing_hint: state.marketContext?.regime === "risk_off" ? "kleiner" : "nicht_beurteilbar",
+      distance_to_entry_zone_pct: null,
+      computable: false,
+    };
+    logRun(state.runId, "info", `[trade_setup] skipped for domain=${state.analysisDomain}`);
+    return;
+  }
+
   state.tradeSetup = computeTradeSetup({
     gate: state.gate ?? "Yellow",
     lens: state.lensResults?.quality_compounder?.lens ?? "quality_compounder",
@@ -1218,6 +1376,8 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
     sector: state.identity?.sector ?? "",
     industry: state.identity?.industry ?? "",
     research_date: state.runDate,
+    analysis_domain: state.analysisDomain ?? "fundamental",
+    analysis_domain_reasons: state.analysisDomainReasons ?? [],
     category: state.category,
     growth_research_score: state.scoreTotal,
     gate: state.gate,
@@ -1248,11 +1408,11 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
     falsification_tests: state.thesis?.falsification_tests ?? [],
     source_list: sourceList,
     handoff_to_trade_engine: canHandoffToTradeEngine({
-      scoreTotal: state.scoreTotal ?? 0,
+      scoreTotal: state.analysisDomain === "fundamental" ? (state.scoreTotal ?? 0) : 0,
       coverage: state.coverage!,
       confidence: state.confidence!,
       category: state.category!,
-      hardBlockers: state.hardBlockers!,
+      hardBlockers: state.analysisDomain === "fundamental" ? state.hardBlockers! : [],
     }),
     models: {
       extract: state.effectiveModels?.extract ?? null,
@@ -1266,6 +1426,8 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
     invalid_source_refs: Array.from(new Set(state.invalidSourceRefs ?? [])),
     business_model_profile: state.businessModelProfile ?? null,
     metric_applicability: state.metricApplicability ?? {},
+    qualitative_thesis: state.qualitativeThesis ?? null,
+    plausibility_flags: state.plausibilityFlags ?? [],
     data_quality: {
       coverage: state.dataQuality ?? {
         keyMetricCoverage: 0,
@@ -1296,14 +1458,20 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
     },
     trader_cockpit: {
       actionability:
-        (state.dataQuality?.criticalMetricCoverage ?? 1) < 0.4
+        state.analysisDomain === "data_incomplete"
+          ? "data_insufficient"
+          : (state.dataQuality?.criticalMetricCoverage ?? 1) < 0.4
           ? "data_insufficient"
           : state.gate === "Green"
             ? "watchlist"
             : "research_only",
-      primary_blocker: (state.hardBlockers ?? [])[0] ?? null,
+      primary_blocker:
+        (state.hardBlockers ?? [])[0]
+        ?? (state.analysisDomain !== "fundamental" ? (state.analysisDomainReasons ?? [])[0] ?? null : null),
       blocker_type:
-        (state.dataQuality?.criticalMetricCoverage ?? 1) < 0.55
+        state.analysisDomain === "data_incomplete"
+          ? "data_quality"
+          : (state.dataQuality?.criticalMetricCoverage ?? 1) < 0.55
           ? "data_quality"
           : (state.hardBlockers?.length ?? 0) > 0
             ? "hard"
@@ -1408,10 +1576,17 @@ export async function stepPersist(state: PipelineState): Promise<{ reportId: str
     quadrant: state.timing?.quadrant
       ? {
           ...state.timing.quadrant,
-          yFundamentalScore: state.scoreTotal,
+          yFundamentalScore: state.analysisDomain === "fundamental" ? state.scoreTotal : null,
         }
       : null,
-    action_recommendation: state.timing?.actionRecommendation ?? null,
+    action_recommendation:
+      state.analysisDomain === "qualitative"
+        ? (state.qualitativeThesis?.verdict === "spekulativ_risiko"
+            ? "avoid"
+            : "watch")
+        : state.analysisDomain === "data_incomplete"
+          ? "watch"
+          : state.timing?.actionRecommendation ?? null,
     analyst: state.analyst ?? null,
     trade_setup: state.tradeSetup,
 

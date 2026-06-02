@@ -143,6 +143,7 @@ async function fetchWithFallback(
   const errors: string[] = [];
   let retries = 0;
   let hadRateLimit = false;
+  let hadNotReported = false;
 
   const maxRetries = THRESHOLDS.provider_fetch_max_retries;
   const backoffBase = THRESHOLDS.provider_fetch_backoff_ms;
@@ -152,6 +153,13 @@ async function fetchWithFallback(
     const text = String(err ?? "").toLowerCase();
     if (text.includes("rate") && text.includes("limit")) return "rate_limited";
     if (text.includes("429")) return "rate_limited";
+    if (
+      text.includes("not_entitled_or_unavailable") ||
+      text.includes("unexpected token '<'") ||
+      (text.includes("not valid json") && text.includes("<!doctype"))
+    ) {
+      return "not_reported";
+    }
     return "fetch_failed";
   };
 
@@ -183,6 +191,7 @@ async function fetchWithFallback(
 
       const status = classifyError(result.error);
       if (status === "rate_limited") hadRateLimit = true;
+      if (status === "not_reported") hadNotReported = true;
 
       if (!result.ok && attempt < maxRetries && (status === "rate_limited" || status === "fetch_failed")) {
         const delay = backoffBase * Math.pow(backoffFactor, attempt);
@@ -203,7 +212,7 @@ async function fetchWithFallback(
     result: null,
     diagnostic: {
       capability: cap,
-      status: hadRateLimit ? "rate_limited" : "fetch_failed",
+      status: hadRateLimit ? "rate_limited" : hadNotReported ? "not_reported" : "fetch_failed",
       providerTried,
       providerUsed: null,
       retries,

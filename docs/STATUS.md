@@ -4,6 +4,49 @@
 
 ---
 
+## Aktueller Stand — 2026-06-02 (Update 28)
+
+## Aktueller Stand — 2026-06-02 (Update 29)
+
+**Phase:** Runtime-Rescue verifiziert und Produktionsrauschen reduziert.
+
+### Umgesetzt
+
+- `src/lib/providers/yahoo.ts`: Prices/Historical-Aufruf setzt jetzt explizit `period2` -> kein `prices:fetch_failed` wegen `period2: undefined` mehr.
+- `src/app/api/reports/[id]/chat/route.ts`: `GET`- und `OPTIONS`-Handler ergänzt, damit Verfügbarkeits-Checks keinen `405 Method Not Allowed` mehr erzeugen.
+- `src/lib/providers/finnhub.ts`: Nicht-JSON-/Entitlement-Antworten werden robust erkannt (`not_entitled_or_unavailable`) statt als generischer JSON-Parse-Fatal.
+- `src/lib/providers/collect.ts`: Error-Klassifikation erweitert; optionale Capabilities mit Entitlement-/HTML-Antworten werden als `not_reported` statt `fetch_failed` markiert.
+
+### Verifiziert
+
+- Frischer HIMS-Lauf erfolgreich: `runId=03c672b6-d796-47a7-a938-6ba6746b13c6`, `reportId=mpwo1u2ubc630217a5fc5b1a`.
+- Kein technischer Incomplete-Flag im neuen Laufpfad; Pipeline endet regulär mit Persist.
+- Report-Domain wieder `fundamental` statt `data_incomplete`.
+- `run_integrity.fetch_statuses`: `estimates` und `news_sentiment` stehen auf `not_reported` (nicht mehr `fetch_failed`).
+- Endpoint-Check erfolgreich: `GET /api/reports/{id}/chat` liefert `{ ok: true, chat: "available" }`.
+
+### Offene Restpunkte
+
+- Browser-Konsole zeigt weiterhin eine Recharts-Layout-Warnung (`width/height -1`), funktional jedoch ohne Pipeline-/API-Impact.
+
+**Phase:** Rescue Brief Domänen-Routing / qualitativer Thesen-Modus umgesetzt.
+
+### Umgesetzt
+
+- `src/lib/research/business-model-classifier.ts` liest Filing-/Quellentext mit und erkennt jetzt u. a. `ai_infrastructure_neocloud`, `crypto_miner`, `pre_revenue_buildout`, `clinical_biotech`, `spac`, `hardware_plus_saas`.
+- `src/lib/research/analysis-domain.ts` trennt verbindlich `fundamental`, `qualitative`, `data_incomplete` und baut fuer Story-Stocks eine quellenbasierte `QualitativeThesis`.
+- `src/lib/orchestrator/steps.ts` routet vor dem Urteil domain-spezifisch: kein Fake-0-100 mehr fuer Buildouts/Story-Stocks; technische Fetch-Fehler landen in `data_incomplete` statt in einem Scheinscore.
+- Plausibilitaets-Waechter unterdruecken widerspruechliche Werte wie implausibles 0%-Wachstum oder fragwuerdiges Net Debt/EBITDA als Verdict-Treiber.
+- Report-Schema/UI erweitert: `analysis_domain`, Begruendungen, qualitative Thesis mit Quellen, Banner fuer `qualitative`/`data_incomplete`; Radar/Kennzahlenbloecke nur noch im Fundamental-Modus.
+
+### Verifiziert
+
+- `npm run typecheck` ✅
+- `npm test` ✅ (69/69 Dateien, 212/212 Tests)
+- Neue Regressionen: `analysis-domain.test.ts`, `report-domain-modes.test.tsx`
+
+---
+
 ## Aktueller Stand — 2026-06-02 (Update 25)
 
 ## Aktueller Stand — 2026-06-02 (Update 27)
